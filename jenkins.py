@@ -6,38 +6,323 @@ import os
 import sys
 import argparse
 import time
-import json
+import datetime
 import requests
+import traceback
+import urllib
+from requests.auth import HTTPBasicAuth
 from pathlib import Path
 from pprint import pprint, pformat
+
+
+#####################################################################
+# Helpers
+#####################################################################
+
+import collections
+
+Color = collections.namedtuple('Color', "reset black red green yellow blue magenta cyan white grey ired igreen iyellow iblue imagenta icyan iwhite")
+Color.__new__.__defaults__ = ("",) * len(Color._fields)
+Style = collections.namedtuple('Color', "bold dim under inv")
+Style.__new__.__defaults__ = ("",) * len(Style._fields)
+fg = Color()
+style = Style()
+
+ColorLog = collections.namedtuple('ColorLog', "send recv info note progress error")
+ColorLog.__new__.__defaults__ = ("",) * len(ColorLog._fields)
+color = ColorLog()
+
+def color_enable(force=False):
+    global fg, style, color
+    if force or (sys.stdout.isatty() and os.name != 'nt'):
+        fg = Color(reset="\033[0m",black="\033[30m",red="\033[31m",green="\033[32m",yellow="\033[33m",blue="\033[34m",magenta="\033[35m",cyan="\033[36m",white="\033[37m",
+                   grey="\033[90m",ired="\033[91m",igreen="\033[92m",iyellow="\033[93m",iblue="\033[94m",imagenta="\033[95m",icyan="\033[96m",iwhite="\033[97m")
+        style = Style(bold="\033[1m", dim="\033[2m", under="\033[4m", inv="\033[7m")
+
+        color = ColorLog(
+            send = fg.igreen,
+            recv = fg.green,
+            info = fg.white + style.bold,
+            note=fg.iyellow,
+            progress = fg.white + style.dim,
+            error=fg.ired,
+        )
+
+def is_posix():
+    try:
+        import posix
+        return True
+    except ImportError:
+        return False
+
+def key_value_str_to_dict(s):
+    d = {}
+    kv_list = s.split(",")
+    for kv in kv_list:
+        k, v = kv.split("=")
+        d[k] = v
+    return d
+
+def deltatimeToHumanStr(deltaTime, decimalPlaces=0, separator=' '):
+    """
+    Format number of seconds or a datetime.deltatime object into a short human readable string
+
+    >>> deltatimeToHumanStr(datetime.timedelta(seconds=1))
+    '1s'
+    >>> deltatimeToHumanStr(datetime.timedelta(seconds=1.750), 1)
+    '1.8s'
+    >>> deltatimeToHumanStr(datetime.timedelta(seconds=1.750), 3)
+    '1.750s'
+    >>> deltatimeToHumanStr(datetime.timedelta(hours=3, seconds=1.2), 1)
+    '3h 0m 1.2s'
+    >>> deltatimeToHumanStr(datetime.timedelta(days=6, hours=14, minutes=44, seconds=55))
+    '6d 14h 44m 55s'
+    >>> deltatimeToHumanStr(123)
+    '2m 3s'
+
+    :param deltaTime:      Either number of seconds or a deltatime object
+    :param decimalPlaces:  Number of decimal places for the seconds part
+    :param separator:      Separator between each part
+    :return:
+    """
+    if not isinstance(deltaTime, datetime.timedelta):
+        deltaTime = datetime.timedelta(seconds=deltaTime)
+
+    d = deltaTime.days
+    h, s = divmod(deltaTime.seconds, 3600)
+    m, s = divmod(s, 60)
+    s = float(s) + float(deltaTime.microseconds) / 1000000
+    #print("FOO", s, deltaTime.microseconds, float(deltaTime.microseconds)/1000000)
+
+    dhms = ""
+    if d > 0:
+        dhms += str(d) + 'd' + separator
+    if h > 0 or len(dhms) > 0:
+        dhms += str(h) + 'h' + separator
+    if m > 0 or len(dhms) > 0:
+        dhms += str(m) + 'm' + separator
+    if s > 0 or len(dhms) > 0:
+        dhms += ('{:.%df}s' % decimalPlaces).format(s)
+
+    return dhms
+
+def timestamp_ms_to_datetime(ts_ms):
+    t = datetime.datetime.fromtimestamp(int(ts_ms) / 1000)
+    return t.strftime("%Y-%m-%d %H:%M:%S")
+
+def timestamp_ms_to_deltatime(ts_ms):
+    t = datetime.datetime.fromtimestamp(int(ts_ms) / 1000)
+    dt = datetime.datetime.now() - t
+    return deltatimeToHumanStr(dt)
+
+def timestamp_ms_to_datetime_and_deltatime(ts_ms):
+    abstime = timestamp_ms_to_datetime(ts_ms)
+    dts = timestamp_ms_to_deltatime(ts_ms)
+    return f"{abstime} ({dts} ago)"
 
 
 #####################################################################
 # Jenkins
 #####################################################################
 
+class JenkinsException(Exception):
+    pass
+
 class Jenkins(object):
+    """
+    Jenkins Commandline Client that can:
+
+      - Start a build job, optionally with parameters
+        - Wait for completion
+        - Print console output on the fly
+      - Fetch artifacts of build job (latestSuccessful or specific build number)
+      - Get project info
+      - Fetch full console log of given project (last build or specific build number)
+
+    [Remote Access API](https://www.jenkins.io/doc/book/using/remote-access-api/)
+
+    You need to set two class variables to make the class work:
+
+        - `JENKINS_URL` is the URL for the Jenkins server
+
+
+    https://javadoc.jenkins-ci.org/hudson/model/FreeStyleProject.html
+
+    Python Jenkins Modules
+      - https://python-jenkins.readthedocs.io/en/latest
+        - https://opendev.org/jjb/python-jenkins
+      - https://jenkinsapi.readthedocs.io/en/latest
+        - https://github.com/pycontribs/jenkinsapi
+
+    Other jenkins CLI implementations:
+      - https://github.com/jenkins-zh/jenkins-cli (go)
+      - https://github.com/m-sureshraj/jenni
+        Jenkins personal assistant - CLI tool to interact with Jenkins server (nodejs)
+
+    """
+    BUILD_WAIT_TIMEOUT = 7200
+    BUILD_NAMES = (
+        'lastBuild', 'lastCompletedBuild', 'lastFailedBuild', 'lastSuccessfulBuild',
+        # Following three are typically not that interesting
+        'lastStableBuild', 'lastUnstableBuild', 'lastUnsuccessfulBuild'
+    )
+
     def __init__(self, verbose=1):
         # disable InsecureRequestWarning: "Unverified HTTPS request" warnings
         requests.packages.urllib3.disable_warnings(requests.urllib3.exceptions.InsecureRequestWarning)
 
         self.server_url = "https://jenkins.lan"
-        self._conn_ok = False
-        self._verify = False
-        self.assert_connectivity()
+        self.check_certificate = True
+        self.auth_user = ""
+        self.auth_password = ""
+        self.console_poll_interval = 2
+        self.console_log_dir = "/tmp/jenkins-log"
 
-        self.job_url = None
+        self._conn_ok = False
+
+        self.job_name = ""
+        self.job_id = ""
+        self.job_started = None
         self.artifacts = None
 
+        self.build_params_default = ""
+
+        self.console_output_file = True
+
         self.verbose = verbose
-        # Allow "remote build launch" of Jenkins jobs. Configured in actual Jenkins job.
-        self.default_build_params = { 'token': "build" }
+        self.log_progress = True
+
+        self.log_req = False
+        self.log_resp_status = False
+        self.log_resp_headers = False
+        self.log_resp_text = False
+        self.log_resp_json = False
+
+    def __str__(self):
+        return f"<Jenkins {self.server_url} auth={self.auth_user}>"
+
+    def log_enable(self, flags):
+        self.log_req = 's' in flags
+        self.log_resp_status = 'r' in flags
+        self.log_resp_headers = 'h' in flags or 'rr' in flags
+        self.log_resp_text = 't' in flags
+        self.log_resp_json = 'j' in flags
+
+    @staticmethod
+    def get_log_help():
+        return "s = send, r = response status, h = response headers, t = response text, j = response pretty json"
+
+    def echo_progress(self, s):
+        if self.log_progress:
+            print(f"{color.progress}{s}{fg.reset}")
+
+    def echo_note(self, s, level=0):
+        if self.verbose >= level:
+            print(f"{color.note}{s}{fg.reset}")
+
+    def echo_info(self, s, level=0):
+        if self.verbose >= level:
+            print(f"{color.info}{s}{fg.reset}")
+
+    def echo_verb(self, s, level=1):
+        if self.verbose >= level:
+            print(f"{color.info}{s}{fg.reset}")
+
+    def log_response(self, response, force=False):
+        # if self.log_req or force:
+        #     print(f"{color.send}{response.request.method} {response.url}{fg.reset}")
+        if self.log_resp_headers or force:
+            print(f"{color.recv}Response: {response.status_code} {response.reason}\n{response.headers}{fg.reset}")
+        elif self.log_resp_status:
+            print(f"{color.recv}Response: {response.status_code} {response.reason}{fg.reset}")
+
+        return response
+
+    def set_job_name_and_id(self, job_name, job_id='lastSuccessfulBuild'):
+        if not job_name:
+            return
+        parts = job_name.split("/")
+        if len(parts) == 2:
+            job_name, job_id = parts
+
+        self.job_name = job_name
+        self.job_id = job_id
+        if all([x in '0123456789' for x in job_id]):
+            return
+        if job_id == "last":
+            self.job_id = Jenkins.BUILD_NAMES[0]
+            return
+
+        m = []
+        for b in Jenkins.BUILD_NAMES:
+            if job_id.lower() in b.lower():
+                m.append(b)
+        if len(m) > 1:
+            raise ValueError(f"job_id matches several build types: {m}")
+        if len(m) == 0:
+            bts = ",".join(Jenkins.BUILD_NAMES)
+            raise ValueError(f"Bad job_id. Allowed job_id is numeric or one of: {bts}")
+
+        self.job_id = m[0]
+
+
+    def request(self, url, method="GET", params=None, auth=None, **kwargs):
+        """
+        see https://stackoverflow.com/questions/16907684/fetching-a-url-from-a-basic-auth-protected-jenkins-server-with-urllib2
+        and https://findwork.dev/blog/advanced-usage-python-requests-timeouts-retries-hooks/
+
+        :param url: URL of the form "http://jenkins.lan/job/{name}"
+        :return:    requests.Response object from requests.get()
+        """
+        if auth is True:
+            auth = HTTPBasicAuth(username=self.auth_user, password=self.auth_password)
+
+        if self.log_req:
+            q = "?" + urllib.parse.urlencode(params) if params else ""
+            print(f"{color.send}{method} {url}{q}{fg.reset}")
+
+        response = requests.request(method, url, params=params, verify=self.check_certificate, auth=auth, **kwargs)
+
+        if not auth and response.status_code == 403 and self.auth_user and self.auth_password:
+            self.log_response(response)
+            self.echo_progress("Retrying with HTTPBasicAuth")
+            auth = HTTPBasicAuth(username=self.auth_user, password=self.auth_password)
+            response = requests.request(method, url, params=params, verify=self.check_certificate, auth=auth, **kwargs)
+
+        self.log_response(response)
+
+        if response.status_code >= 400:
+            if not self.log_req:
+                print(f"{color.send}{response.request.method} {response.url}{fg.reset}")
+            response.raise_for_status()
+
+        return response
+
+    def request_api_json(self, url, params=None, **kwargs):
+        """
+        Send request and return response as JSON
+
+        :param url: URL of the form "http://some.server.loc/job/{name}/api/json"
+        :return:    JSON response object
+        """
+        if not url.endswith("/api/json"):
+            url += "/api/json"
+        response = self.request(url, params=params, **kwargs)
+
+        if self.log_resp_text:
+            print(response.text)
+
+        jr = response.json()
+        if self.log_resp_json:
+            pprint(jr)
+
+        return jr
 
 
     def assert_connectivity(self):
         # NOTE: we could also use requests.get(..., cert=FILEPATH) to pass in the CA certificate
 
-        print(f"Checking Jenkins connectivity: {self.server_url}")
+        self.echo_info(f"Checking Jenkins connectivity: {self.server_url}")
         try:
             requests.get(self.server_url, verify=False)
             self._conn_ok = True
@@ -46,183 +331,638 @@ class Jenkins(object):
 It seems you don't have the Jenkins (self-signed) CA certificate installed
 or the certificate has expired. 
 """
-            raise RuntimeError(error_msg_cacert)
+            raise JenkinsException(error_msg_cacert)
 
 
-    def print(self, s, level=1):
-        if self.verbose >= level:
-            print(s)
+    def get_job_url(self, name=None):
+        if not name:
+            name = self.job_name
+        else:
+            self.job_name = name
+        if not name:
+            raise ValueError("JOB name argument mssing")
+        return f"{self.server_url}/job/{name}"
 
-    def get_last_successful_artifact(self, name=None):
+    def get_job_id_url(self, name=None, job_id=None):
+        if not job_id:
+            job_id = self.job_id
+        else:
+            self.job_id = job_id
+        if not job_id:
+            raise ValueError(f"Missing job ID. Try again with something like: {prog} ... {jen.job_name}/last")
+        return self.get_job_url(name) + f"/{job_id}"
+
+    def get_queue(self):
+        def fixup_queue_item(j):
+            _class = j.get('_class')
+            if _class:
+                _class = _class.split(".")[-1].replace("Queue$", "").replace("Item", "")
+                j['_class'] = _class
+
+            if _class not in ("Waiting", "Blocked", "Buildable"):
+                return
+
+            for k in ('inQueueSince', ): #, 'buildableStartMilliseconds'
+                if k in j:
+                    j[k] = timestamp_ms_to_datetime_and_deltatime(j[k])
+            timestamp = j.get('timestamp')
+            if timestamp:
+                j['timestamp'] = timestamp_ms_to_datetime(timestamp)
+
+            task = j.get('task')
+            if task:
+                j['name'] = task.get('name')
+
+            why = j.get('why', "")
+            toolong = len(why) - 70
+            if toolong > 0:
+                if toolong < 12:
+                    j['why'] = why
+                else:
+                    j['why'] = why[:60] + f" ... [{toolong} more]"
+
+            return j
+
+        url = f"{self.server_url}/queue"
+        jr = jen.request_api_json(url)
+        for item in jr.get('items'):
+            yield fixup_queue_item(item)
+
+    def get_queue_by_job(self, name):
+        self.echo_info("Getting Jenkins queue")
+        for item in self.get_queue():
+            if item['name'] == name:
+                yield item
+
+    @staticmethod
+    def job_get_param_definition(jr):
+        props = jr.get('property')
+        job_params = []
+        for prop in props:
+            if len(prop) == 1:
+                continue
+            if prop.get('_class') != "hudson.model.ParametersDefinitionProperty":
+                continue
+
+            params = prop.get('parameterDefinitions')
+            for param in params:
+                job_param = {
+                    'name': param.get('name'),
+                    'default': param.get('defaultParameterValue', {}).get('value'),
+                    'description': param.get('description'),
+                }
+                job_params.append(job_param)
+
+        return job_params
+
+    def print_project(self, name=None, all_builds=False):
         """
 
-        :param name: Jenkins job name
-        :return: url_artifacts, list of dictionaries:
-            [{'displayPath': 'foo.zip', 'fileName': 'foo.zip', 'relativePath': 'foo.zip'}],
+        :param name:
         """
-        url_lastsuccess = f"{self.server_url}/job/{name}/lastSuccessfulBuild"
-        url = f"{url_lastsuccess}/api/json"
-        try:
-            r = requests.get(url, verify=self._verify)
-            response = json.loads(r.text)
-            self.job_url = url_lastsuccess
-            self.artifacts = response.get('artifacts', [])
-            self.print(f"Sent    : {r.url}")
-            self.print(f"Received: {r.text}")
-            return url_lastsuccess, self.artifacts
-        except:
-            print(f"FAILED: GET {r.url}")
-            raise
+        url = self.get_job_url(name)
+        jr = self.request_api_json(url)
+
+        _class = jr.get('_class')
+        if _class:
+            _class = _class.split(".")[-1]
+            jr['class'] = _class
+
+        # Make disctionary of symbolic build names to build number,
+        # e.g. { 'last': 94, 'lastSuccessful': 94, 'lastFailed': 92, ... }
+        name_to_number = {}
+        for b in Jenkins.BUILD_NAMES[:4]:
+            sym_build_name = jr.get(b)
+            if sym_build_name:
+                number = "None" if sym_build_name is None else sym_build_name.get('number')
+                name = b.replace("Build", "")
+                name_to_number[name] = number
+
+        if all_builds:
+            jr = self.build_get(job_id="all")
+            for jr_build in reversed(jr.get('builds')):
+                self.build_print(jr_build, oneline=True, name_to_number=name_to_number)
+            return
+
+        w = 16
+        # 'inQueue' is apparently always False?
+        for name in ('fullName', 'description', 'class'):
+            value = jr.get(name)
+            print(f"{name:{w}} {value}")
+
+        props = jr.get('property')
+        # Project has properties only if there are more than the '_class'
+        # item in any of the arrays dictionaries
+        # has_props = max(len(p) for p in props) > 1
+        # if has_props:
+        #     print("property:")
+
+        def printProperty():
+            _class = prop.get('_class')
+            if _class == "hudson.model.ParametersDefinitionProperty":
+                params = prop.get('parameterDefinitions')
+                print("parameterDefinitions:")
+                name_width = max([len(p.get('name')) for p in params]) + 1
+                for param in params:
+                    name = param.get('name')
+                    defval = param.get('defaultParameterValue', {}).get('value')
+                    print(f"    {name:{name_width}} {defval}")
+            else:
+                print(f"  {_class}: No handler for printing this class")
+
+        for prop in props:
+            if len(prop) > 1:
+                printProperty()
+
+        # Iterate only over distinct/unique build numbers
+        numbers = set(name_to_number.values())
+        for number in sorted(numbers):
+            jr_build = self.build_get(job_id=number)
+            self.build_print(jr_build, name_to_number=name_to_number)
+
+        if self.verbose:
+            queue = list(self.get_queue_by_job(self.job_name))
+            if queue:
+                print(f"{len(queue)} build jobs queued for {self.job_name}")
+            else:
+                print(f"No build jobs queued for {self.job_name}")
 
 
-    def req_wait(self, url, key, wait_msg="result", timeout=60, poll_interval=2):
-        if not poll_interval:
-            poll_interval = max(int(timeout / 30), 5)
+    def build_print(self, jr, oneline=False, name_to_number=dict()):
+
+        number = jr.get('number')
+        result = jr.get('result')
+        building = jr.get('building')
+        timestamp = timestamp_ms_to_datetime_and_deltatime(jr.get('timestamp'))
+        duration = deltatimeToHumanStr(jr.get('duration') / 1000)
+        estDuration = deltatimeToHumanStr(jr.get('estimatedDuration') / 1000)
+
+        sym_names = [ name for name,num in name_to_number.items() if num == number ]
+        sym_names = " ".join(sym_names) if sym_names else ""
+        if oneline:
+            print(f"{number:4} {result:10} {duration:>10}  {timestamp}  {sym_names}")
+        else:
+            w = 12
+            print(f"build {number:{w - 2}} {sym_names}")
+            for name in ('result', 'building'):
+                value = jr.get(name)
+                if value:
+                    print(f"    {name:{w}} {value}")
+
+            for name, value in (('timestamp', timestamp), ('duration', duration), ('estDuration', estDuration)):
+                print(f"    {name:{w}} {value}")
+
+
+    def build_get(self, name=None, job_id=None):
+        """
+        Get Jenkins job result
+
+        For example, to get artifacts::
+
+            jr = jenkins.get_job()
+            artifacts = jr.get('artifacts', [])
+            >>> [{'displayPath': 'foo.zip', 'fileName': 'foo.zip', 'relativePath': 'foo.zip'}],
+
+        See https://stackoverflow.com/questions/54119863/get-build-details-for-all-builds-of-all-jobs-from-jenkins-rest-api
+
+        :param name:   Jenkins job name
+        :param job_id: Jenkins job ID
+        :return:       JSON response object of request "{self.server_url}/job/{name}/{job_id}"
+        """
+        url = self.get_job_id_url(name=name, job_id=job_id)
+        params = {}
+        if self.job_id == "all":
+            url = self.get_job_url()
+            params = {'tree': 'jobs[name]'}
+            params = {'tree': 'jobs[name,url,builds[number,result,duration,url]]'}
+            params = {'tree': 'builds[number,result,timestamp,duration,estimatedDuration]'}
+            #url = f"{self.server_url}"
+        return self.request_api_json(url, params=params)
+
+    def get_system_log(self):
+        url = f"{self.server_url}/api/system/logs"
+        response = self.request(url, method="GET", auth=True)
+        print(response.content)
+
+    def make_output_filename_and_symlink(self, with_job_id=True):
+        logpath_job = f"{self.console_log_dir}/{self.job_name}"
+        symlink = f"{logpath_job}-latest"
+        logfile = f"{logpath_job}"
+        if with_job_id:
+            logfile += f"-{self.job_id}"
+        os.makedirs(os.path.dirname(logpath_job), exist_ok=True)
+        return logfile, symlink
+
+    def get_console_output(self, name=None, job_id=None):
+        """
+        https://jenkins.lan/job/openwrt/17/logText/progressiveText?start=0
+        """
+        job_url = self.get_job_id_url(name=name, job_id=job_id)
+        fout = None
+        if self.console_output_file:
+            logfile, symlink = self.make_output_filename_and_symlink()
+            self.console_output_file = f"{logfile}-console.log"
+            fout = open(self.console_output_file, "w")
+            if is_posix():
+                symlink = f"{symlink}-console.log"
+                if os.path.islink(symlink):
+                    os.remove(symlink)
+                os.symlink(os.path.basename(self.console_output_file), symlink)
+                self.echo_info(f"Wrote symlink {symlink}")
+
+        text_size = 0
+        started_at = time.time()
+        last_output_at = started_at
+        last_progress_at = last_output_at
+
+        while True:
+            url = f"{job_url}/logText/progressiveText?start={text_size}"
+            r = self.request(url)
+            if r.text:
+                last_output_at = time.time()
+                last_progress_at = last_output_at
+                sys.stdout.write(r.text)
+                if fout:
+                    fout.write(r.text)
+                    fout.flush()
+
+            more_data = r.headers.get('X-More-Data')
+            text_size = r.headers.get('X-Text-Size')
+            if not more_data:
+                break
+
+            time.sleep(self.console_poll_interval)
+
+            if time.time() - last_progress_at >= 10:
+                last_progress_at = time.time()
+
+                since_start = deltatimeToHumanStr(time.time() - started_at)
+                since_output = deltatimeToHumanStr(time.time() - last_output_at)
+                self.echo_progress(f"Waiting for output: started {since_start} ago, last output {since_output} ago")
+
+        if self.console_output_file:
+            self.echo_info(f"Wrote console output to {self.console_output_file}")
+
+    def req_waitfor_key_value(self, url, key, wait_msg="result", timeout=60, interval=1):
+        """
+        Continuously poll ``url`` (api/json) and return when JSON response object
+        contains ``key`` and is non-empty
+
+        :param url:      Jenkins job url
+        :param key:      JSON key to wait for
+        :param wait_msg: User meesage printed on console
+        :param timeout:  Timeout
+        :param interval: Poll interval
+        :return:         JSON response object
+        """
+        if not interval:
+            interval = max(int(timeout / 30), 5)
 
         started = time.time()
-        for i in range(0, int(timeout / poll_interval)):
-            time.sleep(poll_interval)
-            elapsed = time.time() - started
-            if elapsed < 20 or int(elapsed) % 5 < poll_interval:
-                print(f"Waiting for {wait_msg}: {elapsed:.0f}s of {timeout}s")
+        deadline = started + timeout
+        elapsed = 0
+        while time.time() < deadline:
 
-            r = requests.get(url, verify=self._verify)
-            response = json.loads(r.text)
+            jr = self.request_api_json(url)
+
             # only return if key exists AND has a value
-            if response.get(key) is not None:
-                self.print(f"Received: {r.text}")
-                return response
+            value = jr.get(key)
+            if value is not None:
+                self.echo_verb(f"Got: {key}")
+                return jr
 
-        print(f"Received: {r.text}")
+            time.sleep(interval)
+            elapsed = time.time() - started
+            if elapsed < 20 or int(elapsed) % 5 < interval:
+                self.echo_progress(f"Waiting for {wait_msg}: {elapsed:.0f}s of {timeout}s")
+
         msg = f"TIMEOUT after {elapsed:.0f}s while waiting for {wait_msg}"
-        raise RuntimeError(msg)
+        raise JenkinsException(msg)
 
-    def run_job(self, name=None, url_loc=None, params=None, build_wait=60):
+    def job_start(self, name=None, params=None):
         """
-
         :param name:    Jenkins job name
-        :param url_loc: "build" or "buildWithParameters"
-        :param params:  Dictionary of build parameters
-        :param build_wait: Seconds to wait for build completion
-        :return:job_url, artifacts dict
+        :param params:  comma separated list of key=value pairs, e.g. 'foo=1,baz=10'
+                        or dictionary of build parameters
+        :return:        job_id
         """
+        # See if it is a parameterized job or not
+        job_url = self.get_job_url(name)
+        jr = self.request_api_json(job_url)
+        job_params = self.job_get_param_definition(jr)
+        allparams = self.build_params_default
 
-        job_url = f"{self.server_url}/job/{name}"
-        url_startjob = f"{job_url}/{url_loc}"
-        started = time.time()
+        if job_params:
+            self.echo_info(f"Starting Jenkins parameterized job {self.job_name}")
+            self.echo_info(f"Using parameters: '{self.build_params_default}' (default) '{params}' (user supplied)")
+            build = "buildWithParameters"
+            if params:
+                allparams += f",{params}"
+        else:
+            self.echo_info(f"Starting Jenkins job {self.job_name}")
+            build = "build"
 
-        print(f"Requesting start of Jenkins job {name}")
-        if not params:
-            params = {}
-        params.update(self.default_build_params)
-
+        if not "delay=0" in allparams:
+            self.echo_info(f"Build parameters do not contain 'delay=0' although it is highly recommended")
         try:
-            # url = requests.Request("GET", url_startjob, params=params).prepare().url
-            req = requests.get(url_startjob, params=params, verify=self._verify)
-            self.print(f"Sent    : {req.url}")
-            self.print(f"Received: {req.headers}")
-        except Exception:
-            raise RuntimeError(f"FAILED to start jenkins job {name} with {req.url}")
+            build_params = key_value_str_to_dict(allparams)
+        except:
+            raise ValueError("Invalid job PARAMS list")
 
-        if 'Location' not in req.headers:
-            print(f"Received: {req.headers}")
-            raise RuntimeError("Location header not found in response. Is URL correct?")
-        location_url = req.headers['Location']
+        url = f"{job_url}/{build}"
+        try:
+            self.job_started = time.time()
+            resp = self.request(url, params=build_params)
+        except requests.exceptions.RequestException as e:
+            raise JenkinsException(f"FAILED to start jenkins job {self.job_name} with {url}")
 
-        print(f"Requested Jenkins job {name}, waiting for build number")
+        location_url = resp.headers.get('Location')
+        if not location_url:
+            self.log_response(resp, force=True)
+            raise JenkinsException("Location header not found in response. Is URL correct?")
+
+        self.echo_info(f"Requested Jenkins job {self.job_name}, waiting for build number")
 
         url = f"{location_url}api/json"
-        response = self.req_wait(url, key="executable", wait_msg="job start", timeout=60)
-        number = response['executable']['number']
+        jr = self.req_waitfor_key_value(url, key="executable", wait_msg="job start", timeout=120)
+        number = jr['executable']['number']
+        self.job_id = number
 
-        print(f"Started Jenkins job {name}, build number {number}")
-
-        url = f"{job_url}/{number}/api/json"
-        response = self.req_wait(url, key="result", wait_msg="job completion", timeout=build_wait)
-        if response['result'] != 'SUCCESS':
-            print(f"Received: {response}")
-            raise RuntimeError(f"Jenkins job result='{response['result']}' but expected SUCCESS")
-
-        artifacts = response['artifacts']
-        if not artifacts:
-            print(f"Received: {response}")
-            raise RuntimeError("No Jenkins build artifacts found!?")
-
-        elapsed = time.time() - started
-        print(f"Build completed in {elapsed:.0f}s")
-
-        self.job_url = job_url
-        self.artifacts = artifacts
-        return job_url, artifacts
+        self.echo_info(f"Started Jenkins job {self.job_name}, build number {number}")
+        return int(number)
 
 
-    def fetch_artifacts(self, dest_dir, artifacts=None, url=None):
-        if not url:
-            url = self.job_url
+    def job_cancel(self):
+        """
+        If the build has not started, you have the queueItem, then POST on:
+        http://<Jenkins_URL>/queue/cancelItem?id=<queueItem>
+        """
+        self.get_job_url() # set self.job_name
+        queue = list(self.get_queue_by_job(self.job_name))
+        if not queue:
+            self.echo_note(f"Job {self.job_name} not in queue")
+            return 0
+
+        self.echo_info(f"Cancelling {len(queue)} in queue")
+        for item in queue:
+            url = f"{self.server_url}/queue/cancelItem"
+            params = { 'id': item['id']}
+            resp = self.request(url, method="POST", params=params, auth=True)
+            if resp.ok:
+                self.echo_info(f"Job {item['id']} cancelled")
+
+        return len(queue)
+
+    def job_stop(self):
+        """
+        Stop build with POST on:
+        http://<Jenkins_URL>/job/<Job_Name>/<Build_Number>/stop
+        """
+        if not self.job_id:
+            self.job_id = "lastBuild"
+        url = self.get_job_id_url() + "/stop"
+        resp = self.request(url, method="POST", auth=True)
+        if resp.ok:
+                self.echo_info(f"Job {self.job_name} stopped")
+
+
+    def compute_job_poll_interval(self, estDuration, elapsed):
+        """
+        Compute auto-adjusting interval for polling build job completion
+        The longer the build, the longer the poll interval
+
+        :param estDuration:
+        :param elapsed:
+        :return:
+        """
+        poll = int(1 + round(estDuration / 10))
+        if poll > 10:
+            poll = 10
+        timeout = 2 * estDuration
+        if estDuration > 30:
+            timeout = estDuration * 1.2
+        return poll, round(timeout)
+
+    def job_get_poll_interval(self):
+        url = self.get_job_id_url()
+        jr = self.request_api_json(url)
+        estDuration = jr.get('estimatedDuration', 60000) / 1000
+        est_str = deltatimeToHumanStr(estDuration)
+        self.echo_info(f"Jenkins job {self.job_name}/{self.job_id} estDuration={est_str}")
+        return self.compute_job_poll_interval(estDuration, 0)
+
+
+    def job_wait(self, name=None, job_id=None, build_wait=None):
+        """
+        :param build_wait: Seconds to wait for build completion
+        :return:
+        """
+        if not job_id:
+            job_id = self.job_id
+        if not job_id:
+            self.build_get(name)
+
+        job_url = self.get_job_id_url(name=name, job_id=job_id)
+        poll, timeout = self.job_get_poll_interval()
+        if build_wait:
+            timeout = build_wait
+
+        jr = self.req_waitfor_key_value(job_url, key="result", wait_msg="job completion", timeout=timeout, interval=poll)
+        result = jr.get('result')
+
+        elapsed = deltatimeToHumanStr(int(jr.get('duration', 0)) / 1000)
+        self.echo_info(f"Build {self.job_name}/{self.job_id} completed in {elapsed} with result={result}")
+
+        if result != 'SUCCESS':
+            raise JenkinsException(f"Jenkins job result='{result}' but expected SUCCESS")
+
+        self.artifacts = jr.get('artifacts', [])
+        return result
+
+
+    def fetch_artifacts(self, dest_dir, artifacts=None):
         if not artifacts:
             artifacts = self.artifacts
+        if not artifacts:
+            self.echo_verb(f"Querying artifacts of job {self.job_name}/{self.job_id}")
+            jr = self.build_get()
+            artifacts = jr.get('artifacts', [])
+
+        if not artifacts:
+            self.echo_info(f"Job {self.job_name}/{self.job_id} has no build artifacts")
+            return 0
+
+        job_url = self.get_job_id_url()
 
         for item in artifacts:
             relpath = item['relativePath']
-            artifact_url = f"{url}/artifact/{relpath}"
-            req = requests.get(artifact_url, verify=self._verify)
+            artifact_url = f"{job_url}/artifact/{relpath}"
+            response = self.request(artifact_url)
 
             dest_path = Path(dest_dir, item['fileName'])
-            print(f"Saving artifact {dest_path}")
+            self.echo_info(f"Saving artifact {dest_path}")
             with dest_path.open('wb') as f:
-                f.write(req.content)
+                f.write(response.content)
 
+
+prog = os.path.basename(__file__)
 
 def parser_create():
-    description = "Run Jenkins job, retrieve build artifacts and save them to local file system"
-    prog = os.path.basename(__file__)
-    examples = f"""
-Examples:
-  {prog} sandbox
-  {prog} house doors=2,windows=8 -o /tmp
+    description = f"""\
+Start Jenkins jobs remotely via Jenkins REST API, retrieve build artifacts,
+and much more
+"""
+    epilog = f"""
+See command-line examples with: {prog} -hh
 """
     parser = argparse.ArgumentParser(
-        description=description, epilog=examples, add_help=False, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=description, epilog=epilog, add_help=False, formatter_class=argparse.RawDescriptionHelpFormatter)
 
-    parser.add_argument(dest='jobname', metavar='JOBNAME', type=str,
-        help="Jenkins job name")
+    parser.add_argument(dest='jobname', metavar='JOB[/ID]', type=str, default=None, nargs='?',
+        help="Jenkins job name (and build ID)")
+    parser.add_argument('-p', dest='params', metavar='PARAMS', type=str, default="",
+        help="Job params given as comma separated list of key=value pairs, e.g. 'foo=1,baz=10'")
+    parser.add_argument('-b', dest='do_build', default=False, action="store_true",
+        help="Start build job")
+    parser.add_argument('-B', dest='stop_build', action='count', default=0,
+        help="Stop build job. Give option twice to cancel job")
+    parser.add_argument('-c', dest='get_console', default=False, action="store_true",
+        help="Get console ouput for job")
+    parser.add_argument('-a', dest='all', default=False, action="store_true",
+        help="Get all (e.g. get all build of proejct)")
     parser.add_argument('-o', dest='outdir', metavar='DIR', default=".",
         help="Output directory for build artifacts")
-    parser.add_argument('-t', dest='timeout', type=int, default=120,
-        help="Jenkins build timeout. Default is 120s")
-    parser.add_argument(nargs='?', dest='params', metavar='PARAMS', type=str,
-        help="Job params given as comma separated list of key=value pairs, e.g. 'foo=1,baz=10'")
-    parser.add_argument('-a', dest='only_artifacts', default=False, action="store_true",
-        help="Do not start a job, just get the artifacts from last successfull build")
+    parser.add_argument('-i', dest='get_info', default=False, action="store_true",
+        help="Get info for project")
+    # parser.add_argument('-j', dest='job_id', metavar="ID", default="lastSuccessfulBuild",
+    #     help="Job ID, e.g. for fetching artifacts from specific build job. Default is 'lastSuccessfulBuild'")
+    parser.add_argument('-w', dest='job_wait', default=False, action="store_true",
+        help="Wait for job completion. Useful when job is already running")
+    parser.add_argument('-t', dest='timeout', type=int, default=None,
+        help="Build completion timeout (when -b option is given). Default is auto-computed")
+    parser.add_argument('--arti', dest='get_artifacts', default=False, action="store_true",
+        help="Get artifacts from build and save them")
+    parser.add_argument('--auth', dest='auth', metavar="NAME_TOK", default=None,
+        help=f"Username and API token, separated by colon. Required for some Jenkins API requests/functions")
+    parser.add_argument('--url', dest='server_url', metavar="URL", default=None,
+        help=f"Jenkins server URL")
+    parser.add_argument('--no-progress', dest='log_progress', default=True, action="store_false",
+        help="Suppress wait progress messages")
+    parser.add_argument('-d', dest='log_http', metavar='srhtj', default="",
+        help='Log HTTP transactions: ' + Jenkins.get_log_help())
     parser.add_argument('-v', dest='verbose', action='count', default=0,
         help='Be more verbose')
-    parser.add_argument('-h', action='help',
-        help='Show this help message and exit')
+    parser.add_argument('-h', dest='help', action='count', default=0,
+        help='Show usage. Give option twice to see usage examples')
     return parser
+
+def print_examples():
+    names = [ x.replace("Build", "") for x in Jenkins.BUILD_NAMES[1:] ]
+    bn = ", ".join(names)
+    print(f"""\
+{prog} command-line examples:
+
+build 'sandbox' project:
+  {prog} -b sandbox
+Get information for 'sandbox' project:
+  {prog} -i sandbox
+Build 'house' project with parameters and save artifacts to /tmp:
+  {prog} -b house -p doors=2,windows=8 --arti -o /tmp
+Save artifcats from last successful build:
+  {prog} house/lastsucc --arti -o /tmp
+Wait for 'longwinded' project to complete build while showing console output:
+  {prog} longwinded -w -c
+Stop last started build:
+  {prog} longwinded -B
+
+JOB/ID is the Jenkins job name and ID where ID is numeric ID or a possibly
+abbreviated (and unique) substring of one of following build names:
+last, {bn}
+""")
 
 if __name__ == "__main__":
     parser = parser_create()
     opt = parser.parse_args()
+    if opt.help:
+        if opt.help == 2:
+            print_examples()
+        else:
+            parser.print_help()
+        sys.exit(0)
 
-    params = None
-    if opt.params:
-        try:
-            kv_list = opt.params.split(",")
-            params = { }
-            for kv in kv_list:
-                k, v = kv.split("=")
-                params[k] = v
-        except:
-            raise ValueError("Invalid job PARAMS list")
+    def print_traceback_tip():
+        if 'd' in opt.log_http:
+            traceback.print_exc()
+        else:
+            print(f"{fg.yellow}Tip: add -dd command-line option to see traceback{fg.reset}")
 
-    url_loc = "buildWithParameters" if params else "build"
+    jen = Jenkins(verbose=opt.verbose)
 
-    jenkins = Jenkins(verbose=opt.verbose)
-    if opt.only_artifacts:
-        jenkins.get_last_successful_artifact(name=opt.jobname)
-    else:
-        jenkins.run_job(name=opt.jobname, url_loc=url_loc, params=params, build_wait=opt.timeout)
+    color_enable()
 
-    jenkins.fetch_artifacts(opt.outdir)
+    url = os.environ.get("JENKINS_URL")
+    jen.server_url = opt.server_url or url or jen.server_url
+    job_id = getattr(opt, 'job_id', "")
+    jen.set_job_name_and_id(opt.jobname, job_id)
+    if not jen.job_id:
+        jen.job_id = "lastBuild"
 
-    print("ok")
+    env_auth = os.environ.get("JENKINS_AUTH")
+    auth = opt.auth or env_auth or f"{jen.auth_user}:{jen.auth_password}"
+    if auth:
+        user_passwd = auth.split(":")
+        if len(user_passwd) != 2:
+            raise ValueError("User name and API token must be separated by colon")
+        jen.auth_user, jen.auth_password = user_passwd
+
+    if opt.verbose >= 2:
+        jen.log_enable("srr")
+    jen.log_enable(opt.log_http)
+    jen.log_progress = opt.log_progress
+
+    try:
+        if opt.stop_build:
+            if opt.stop_build == 1:
+                jen.job_stop()
+            else:
+                jen.job_cancel()
+
+        elif opt.do_build:
+            jen.job_start(params=opt.params)
+            if opt.get_console:
+                jen.get_console_output()
+            jen.job_wait(build_wait=opt.timeout)
+
+        elif opt.job_wait:
+            if opt.get_console:
+                # Get job ID/number of (currently running) lastBuild job
+                url = jen.get_job_url()
+                jr = jen.request_api_json(url)
+                last = jr['lastBuild']
+                if last:
+                    jen.job_id = last.get('number')
+                    jen.get_console_output()
+            jen.job_wait(build_wait=opt.timeout)
+
+        elif opt.get_console:
+            jen.get_console_output()
+
+        if opt.get_artifacts:
+            jr = jen.build_get()
+            artifacts = jr.get('artifacts', [])
+            jen.fetch_artifacts(opt.outdir, artifacts)
+
+        if opt.get_info:
+            jen.print_project(all_builds=opt.all)
+
+        sys.exit(0)
+
+    except requests.exceptions.HTTPError as e:
+        r = e.response
+        print(f"{color.error}{r.status_code} {r.reason} for {r.url}{fg.reset}")
+        print_traceback_tip()
+        sys.exit(4 if r.status_code < 500 else 5)
+    except (requests.exceptions.RequestException, JenkinsException, ValueError) as e:
+        print(f"{color.error}{e}{fg.reset}")
+        print_traceback_tip()
+        sys.exit(1)
