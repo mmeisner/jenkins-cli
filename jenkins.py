@@ -602,10 +602,68 @@ or the certificate has expired.
             #url = f"{self.server_url}"
         return self.request_api_json(url, params=params)
 
+    def get_config_xml(self, filename=None, name=None):
+        """
+        Get Jenkins job config XML
+
+        :param name:   Jenkins job name
+        :return:
+        """
+        job_url = self.get_job_url(name=name)
+        url = f"{job_url}/config.xml"
+        response = self.request(url, auth=True)
+        if not response.text.startswith('<?xml version="1.1"') \
+            or not '<flow-definition plugin="workflow-job@' in response.text:
+            raise ValueError("Unknown, non-XML or non-workflow-job content")
+
+        if filename:
+            open(filename, "w").write(response.text)
+            self.echo_info(f"Wrote config.xml to {filename}")
+        else:
+            self.echo_info(f"Fetched {self.job_name} config.xml")
+
+        return response.text
+
+
     def get_system_log(self):
         url = f"{self.server_url}/api/system/logs"
         response = self.request(url, method="GET", auth=True)
         print(response.content)
+
+    def post_config_xml(self, xml_text=None, filename=None, name=None):
+        """
+        Post config.xml to Jenkins job
+
+        :param xml_text:
+        :param filename:
+        :param name:
+        :return:
+        """
+        job_url = self.get_job_url(name=name)
+        url = f"{job_url}/config.xml"
+
+        if filename and xml_text:
+            raise ValueError("Ambiguous arguments: both xml_text and filename supplied")
+        if not xml_text:
+            xml_text = open(filename, "r").read()
+        else:
+            filename = "new config"
+        try:
+            response = self.request(url, method="POST", data=xml_text, auth=True)
+            self.echo_info(f"Posted {filename} to {self.job_name} config.xml")
+        except requests.exceptions.HTTPError as e:
+            r = e.response
+            if r.status_code == 500:
+                new_config_msg = ""
+                if filename:
+                    new_config_msg = f"New config.xml was saved to {filename}\n"
+                print(f"""
+POST of config.xml was refused on server.
+{new_config_msg}
+You can inspect the Jenkins server logs for the exact cause here:
+    {self.server_url}/log/all
+""")
+            raise
 
     def make_output_filename_and_symlink(self, with_job_id=True):
         logpath_job = f"{self.console_log_dir}/{self.job_name}"
@@ -737,6 +795,16 @@ or the certificate has expired.
             self.job_started = time.time()
             resp = self.request(url, params=build_params)
         except requests.exceptions.RequestException as e:
+            if hasattr(e, 'response') and e.response.status_code == 403:
+                print("""
+Reason for not being able to start a build remotely, might be because
+the project config does not have auth token enabled.
+Check if config.xml contains somehting like <authToken>sometoken</authToken>
+It can be enabled it in the web UI under
+   "Build Triggers / Trigger builds remotely (e.g., from scripts)"
+After that, add the "token=sometoken" as a parameter on the command line
+or as build_params_default in config file.
+""")
             raise JenkinsException(f"FAILED to start jenkins job {self.job_name} with {url}")
 
         location_url = resp.headers.get('Location')
@@ -907,8 +975,12 @@ See command-line examples with: {prog} -hh
         help="Build completion timeout (when -b option is given). Default is auto-computed")
     parser.add_argument('--arti', dest='get_artifacts', default=False, action="store_true",
         help="Get artifacts from build and save them")
+    parser.add_argument('--get-config',  dest='get_config', metavar='FILE', type=str,
+        help="Get config.xml and save to FILE")
+    parser.add_argument('--post-config',  dest='post_config', metavar='FILE', type=str,
+        help="Read FILE and post as config.xml to Jenkins job JOBNAME")
     parser.add_argument('--auth', dest='auth', metavar="NAME_TOK", default=None,
-        help=f"Username and API token, separated by colon. Required for some Jenkins API requests/functions")
+        help=f"Username and API token, separated by colon. Usually required for --get-config, --post-config")
     parser.add_argument('--url', dest='server_url', metavar="URL", default=None,
         help=f"Jenkins server URL. Default is {Config().server_url} or JENKINS_URL from environment")
     parser.add_argument('--no-progress', dest='log_progress', default=True, action="store_false",
@@ -991,6 +1063,16 @@ if __name__ == "__main__":
     jen.echo_verb(f"Read config from {conffile}")
 
     try:
+        if opt.get_config:
+            if not jen.auth_user:
+                raise ValueError("--auth NAME:APITOKEN is required for --get-config")
+            jen.get_config_xml(filename=opt.get_config)
+
+        if opt.post_config:
+            if not jen.auth_user:
+                raise ValueError("--auth NAME:APITOKEN is required for --post-config")
+            jen.post_config_xml(filename=opt.post_config)
+
         if opt.stop_build:
             if opt.stop_build == 1:
                 jen.job_stop()
