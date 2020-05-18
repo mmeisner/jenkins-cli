@@ -9,6 +9,7 @@ import time
 import datetime
 import requests
 import traceback
+import configparser
 import urllib
 from requests.auth import HTTPBasicAuth
 from pathlib import Path
@@ -127,6 +128,68 @@ def timestamp_ms_to_datetime_and_deltatime(ts_ms):
 
 class JenkinsException(Exception):
     pass
+
+class Config(object):
+    """
+        - `build_params_default` are the default parameters used for
+           parameterized builds.
+           - See https://wiki.jenkins.io/display/JENKINS/Parameterized+Build
+           - Jenkins only allows remotely triggered builds if job config
+             contains `authToken` thus resulting in REST API request:
+             `http://server/job/myjob/buildWithParameters?token=TOKEN&PARAMETER=Value`
+
+    """
+    FILENAME = os.path.expanduser("~/.jenkins.ini")
+
+    def __init__(self):
+        self.server_url = "https://jenkins.url.not.set"
+        self.check_certificate = True
+        self.auth_user = ""
+        self.auth_password = ""
+        self.build_params_default = "delay=0"
+        self.console_poll_interval = 2
+        self.console_log_dir = "/tmp/jenkins-log"
+
+
+    def read(self, obj, filename=None):
+        """
+
+        :param filename:  path to configfile
+        :return:          The filepath of the file that was read
+        """
+        if not filename:
+            filename = Config.FILENAME
+        if not os.path.exists(filename):
+            return
+
+        # ConfigParser stores values as strings, so you have to convert them yourself
+        cfg = configparser.ConfigParser()
+        cfg.read(filename)
+
+        # Read the global section (which are the instance variables of this class)
+        section = "global"
+        for name in self.__dict__.keys():
+            cur_value = getattr(self, name)
+            if isinstance(cur_value, bool):
+                value = cfg.getboolean(section, name, fallback=cur_value)
+            elif isinstance(cur_value, int):
+                value = cfg.getint(section, name, fallback=cur_value)
+            elif isinstance(cur_value, float):
+                value = cfg.getfloat(section, name, fallback=cur_value)
+            else:
+                value = cfg.get(section, name, fallback=cur_value)
+                # strip quotes from config value is string
+                value = value.strip('"')
+
+            if value is not None:
+                setattr(self, name, value)
+                if not hasattr(obj, name):
+                    raise RuntimeError(f"{obj} does no have attr '{name}'")
+                setattr(obj, name, value)
+                #print(f"setattr {name} = {value}")
+
+        return filename
+
 
 class Jenkins(object):
     """
@@ -654,7 +717,7 @@ or the certificate has expired.
 
         if job_params:
             self.echo_info(f"Starting Jenkins parameterized job {self.job_name}")
-            self.echo_info(f"Using parameters: '{self.build_params_default}' (default) '{params}' (user supplied)")
+            self.echo_info(f"Using parameters: '{self.build_params_default}' (config default) '{params}' (user supplied)")
             build = "buildWithParameters"
             if params:
                 allparams += f",{params}"
@@ -811,6 +874,8 @@ def parser_create():
     description = f"""\
 Start Jenkins jobs remotely via Jenkins REST API, retrieve build artifacts,
 and much more
+
+Configuration is read from {Config.FILENAME}
 """
     epilog = f"""
 See command-line examples with: {prog} -hh
@@ -845,7 +910,7 @@ See command-line examples with: {prog} -hh
     parser.add_argument('--auth', dest='auth', metavar="NAME_TOK", default=None,
         help=f"Username and API token, separated by colon. Required for some Jenkins API requests/functions")
     parser.add_argument('--url', dest='server_url', metavar="URL", default=None,
-        help=f"Jenkins server URL")
+        help=f"Jenkins server URL. Default is {Config().server_url} or JENKINS_URL from environment")
     parser.add_argument('--no-progress', dest='log_progress', default=True, action="store_false",
         help="Suppress wait progress messages")
     parser.add_argument('-d', dest='log_http', metavar='srhtj', default="",
@@ -898,6 +963,9 @@ if __name__ == "__main__":
 
     jen = Jenkins(verbose=opt.verbose)
 
+    # Order of preference is from highest to lowest: commandline, environment, config
+    conffile = Config().read(jen)
+
     color_enable()
 
     url = os.environ.get("JENKINS_URL")
@@ -919,6 +987,8 @@ if __name__ == "__main__":
         jen.log_enable("srr")
     jen.log_enable(opt.log_http)
     jen.log_progress = opt.log_progress
+
+    jen.echo_verb(f"Read config from {conffile}")
 
     try:
         if opt.stop_build:
