@@ -10,6 +10,7 @@ import datetime
 import requests
 import traceback
 import configparser
+import xml.dom.minidom as minidom
 import urllib
 from requests.auth import HTTPBasicAuth
 from pathlib import Path
@@ -48,6 +49,52 @@ def color_enable(force=False):
             progress = fg.white + style.dim,
             error=fg.ired,
         )
+
+def xml_get_block_within_tag(xmltext, tag="script"):
+    # TODO: use minidom?
+    block = []
+    inscript = False
+    for line in xmltext.splitlines():
+        stripped = line.strip()
+        if inscript:
+            if stripped.startswith(f"</{tag}>"):
+                break
+            block.append(line)
+        elif stripped.startswith(f"<{tag}>"):
+            inscript = True
+            block.append(line.replace(f"<{tag}>", ""))
+
+    return "\n".join(block)
+
+
+def xml_replace_script(xmltext, script_text):
+    # TODO: use minidom?
+    num_scripts = xmltext.count("<script>")
+    if num_scripts > 1:
+        raise ValueError(f"XML contains {num_scripts} <script>'s but expected only one")
+    script_text = script_text\
+        .replace("&", "&amp;")\
+        .replace("<", "&lt;") \
+        .replace(">", "&gt;") \
+        .replace("\"", "&quot;")
+
+    inscript = False
+    newxml = []
+    for line in xmltext.splitlines():
+        stripped = line.strip()
+        if inscript:
+            if stripped.endswith("</script>"):
+                newxml.append("<script>")
+                newxml += script_text.splitlines()
+                newxml.append("</script>")
+                inscript = False
+        elif stripped.startswith("<script>"):
+            inscript = True
+        else:
+            newxml.append(line)
+
+    s = "\n".join(newxml)
+    return s
 
 def is_posix():
     try:
@@ -625,6 +672,30 @@ or the certificate has expired.
         return response.text
 
 
+    def get_config_item(self, job_name=None, tag="authToken"):
+        """
+        See https://docs.python.org/3.6/library/xml.dom.minidom.html
+        See https://docs.python.org/3.6/library/xml.dom.html
+
+        :param job_name:
+        :param tag:
+        :return:
+        """
+        config_xml = self.get_config_xml(name=job_name)
+
+        dom = minidom.parseString(config_xml)
+        elems = dom.getElementsByTagName(tag)
+        if not elems:
+            return None
+        children = elems[0].childNodes
+        if not children:
+            return None
+        child = children[0]
+        if child.nodeType == minidom.Node.TEXT_NODE:
+            return child.nodeValue
+
+        return None
+
     def get_system_log(self):
         url = f"{self.server_url}/api/system/logs"
         response = self.request(url, method="GET", auth=True)
@@ -664,6 +735,25 @@ You can inspect the Jenkins server logs for the exact cause here:
     {self.server_url}/log/all
 """)
             raise
+
+    def get_config_replace_script_and_post(self, filename):
+        script_text = open(filename, "r").read()
+        config_xml = self.get_config_xml()
+
+        ts = datetime.datetime.fromtimestamp(time.time())
+        backup_file, _ = self.make_output_filename_and_symlink(with_job_id=False)
+        backup_file += ts.strftime("-config.xml.%Y%m%d-%H%M%S")
+        open(backup_file, "w").write(config_xml)
+        self.echo_info(f"Wrote backup of config.xml to {backup_file}")
+
+        new_xml = xml_replace_script(config_xml, script_text)
+        self.echo_info(f"Replaced config.xml <script> with file '{filename}'")
+
+        new_config, _ = self.make_output_filename_and_symlink(with_job_id=False)
+        new_config += ts.strftime("-new-config.xml")
+        open(new_config, "w").write(new_xml)
+        self.echo_info(f"Wrote new version of config.xml to {new_config}")
+        self.post_config_xml(filename=new_config)
 
     def make_output_filename_and_symlink(self, with_job_id=True):
         logpath_job = f"{self.console_log_dir}/{self.job_name}"
@@ -975,6 +1065,8 @@ See command-line examples with: {prog} -hh
         help="Build completion timeout (when -b option is given). Default is auto-computed")
     parser.add_argument('--arti', dest='get_artifacts', default=False, action="store_true",
         help="Get artifacts from build and save them")
+    parser.add_argument('--groovy',  dest='groovy', metavar='FILE', type=str,
+        help="Get config.xml, replace groovy script with FILE and post new config")
     parser.add_argument('--get-config',  dest='get_config', metavar='FILE', type=str,
         help="Get config.xml and save to FILE")
     parser.add_argument('--post-config',  dest='post_config', metavar='FILE', type=str,
@@ -1011,6 +1103,10 @@ Wait for 'longwinded' project to complete build while showing console output:
   {prog} longwinded -w -c
 Stop last started build:
   {prog} longwinded -B
+Replace groovy script for 'foobaz' project, then build while showing console output:
+  {prog} foobaz --groovy newscript -bc
+Get config.xml for 'foobaz' project:
+  {prog} foobaz --get-config=foobaz.config.xml
 
 JOB/ID is the Jenkins job name and ID where ID is numeric ID or a possibly
 abbreviated (and unique) substring of one of following build names:
@@ -1072,6 +1168,11 @@ if __name__ == "__main__":
             if not jen.auth_user:
                 raise ValueError("--auth NAME:APITOKEN is required for --post-config")
             jen.post_config_xml(filename=opt.post_config)
+
+        if opt.groovy:
+            if not jen.auth_user:
+                raise ValueError("--auth NAME:APITOKEN is required for --groovy")
+            jen.get_config_replace_script_and_post(filename=opt.groovy)
 
         if opt.stop_build:
             if opt.stop_build == 1:
