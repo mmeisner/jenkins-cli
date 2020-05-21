@@ -8,6 +8,7 @@ import argparse
 import time
 import datetime
 import requests
+import threading
 import traceback
 import configparser
 import xml.dom.minidom as minidom
@@ -1103,6 +1104,128 @@ or as build_params_default in config file.
         return self.request(url, method="POST", auth=False, data="")
 
 
+    class Waiter(threading.Thread):
+        def __init__(self, jenkins, message):
+            threading.Thread.__init__(self)
+            self.jenkins = jenkins
+            self.message = message
+            self.started = None
+            self.running = True
+            self.daemon = True
+
+        def run(self):
+            # self.jenkins.echo_progress(f"Waiter thread starting")
+            self.started = time.time()
+            while True:
+                elapsed = time.time() - self.started
+                interval = 1 if elapsed < 4 else 2 if elapsed < 20 else 5
+                for i in range(10 * interval):
+                    # Chunk the waiting so we can stop thread quickly (max 100ms latency)
+                    # This only has an effect when we use thread.join()
+                    time.sleep(0.1)
+                    if not self.running:
+                        # self.jenkins.echo_progress(f"Waiter thread stopped")
+                        return
+                elapsed_human = deltatimeToHumanStr(time.time() - self.started)
+                self.jenkins.echo_progress(f"{self.message}: {elapsed_human} elapsed")
+
+        def stop(self):
+            self.running = False
+            #self.join()
+
+    def workspace_get_file(self, filepath):
+
+        def post_normal():
+            resp = self.request(url, method="POST", auth=True)
+
+            # This is a quick adhoc fix for determining whether we get an HTML
+            # page listing files or if we got the actual file
+            if 'X-Instance-Identity' in resp.headers:
+                self.echo_info(f"{filepath} seems to be a directory")
+                return None
+
+            return resp.content
+
+        def post_chunked():
+            """This takes double time compared to post_normal()"""
+            resp = self.request(url, method="POST", auth=True, stream=True)
+            # This is a quick adhoc fix for determining whether we get an HTML
+            # page listing files or if we got the actual file
+            if 'X-Instance-Identity' in resp.headers:
+                self.echo_info(f"{filepath} seems to be a directory")
+                return None
+
+            length = resp.headers.get('Content-Length')
+            # print(f"content-length = {length}")
+            content = b""
+            for i, chunk in enumerate(resp.iter_content(chunk_size=10 * 1024 * 1024)):
+                #print(i)
+                content += chunk
+
+            resp.close()
+            return content
+
+        if not self.job_id:
+            self.job_id = "lastBuild"
+        jobid_url = self.get_job_id_url()
+        self.echo_info("Getting workspace file (trying various URLs...")
+
+        for i in range(10):
+            url = f"{jobid_url}/execution/node/{str(i)}/ws/{filepath}"
+            try:
+                waiter = Jenkins.Waiter(self, "Transferring")
+                waiter.start()
+                content = post_normal()
+                waiter.stop()
+                return content
+
+            except requests.exceptions.HTTPError as e:
+                waiter.stop()
+                if e.response.status_code != 404:
+                    raise
+
+        waiter.stop()
+        raise ValueError("Exhausted .../execution/node/<ID>/ws/... URL attempts")
+
+    def workspace_save_file(self, src_path, dest=""):
+        """
+
+        :param src_path:
+        :param dest:
+        :return:
+        """
+        # request https://jenkins.lan/job/JOB/ID/execution/node/2/ws/build/*zip*/build.zip
+        if src_path.endswith("/zip"):
+            src_path = src_path[:-4]
+            src_base = os.path.basename(src_path)
+            src_path = f"{src_path}/*zip*/{src_base}.zip"
+
+        src_base = os.path.basename(src_path)
+        dest_path = f"{dest}/{src_base}" if dest else src_base
+        if os.path.exists(dest_path):
+            raise FileExistsError(dest_path)
+
+        started = time.time()
+        content = self.workspace_get_file(src_path)
+        if not content:
+            print(f"{src_path} seems to be a directory")
+            return
+
+        elapsed = time.time() - started
+        if elapsed > 2:
+            size_kb = len(content) / 1024
+            size_mb = size_kb / 1024
+            size_str = f"{size_mb:.1f}MB" if size_mb > 5 else f"{size_kb:.1f}kB"
+            elapsed_human = deltatimeToHumanStr(elapsed)
+            self.echo_info(f"Transferred {size_str} in {elapsed_human}")
+
+        open(dest_path, "wb").write(content)
+        size_kb = len(content) / 1024
+        self.echo_info(f"Wrote {size_kb:.1f}kB to {dest_path}")
+        # resp = self.request(url, method="GET", auth=False, data="")
+        sys.exit(0)
+
+
 prog = os.path.basename(__file__)
 
 def parser_create():
@@ -1156,6 +1279,8 @@ See command-line examples with: {prog} -hh
         help=f"List Jenkins queue")
     parser.add_argument('--nodes', dest='list_nodes', default=False, action="store_true",
         help=f"List Jenkins build nodes/machines")
+    parser.add_argument('--ws', dest='ws_get', metavar="PATH", default="", type=str,
+        help=f"Get file PATH from workspace")
     parser.add_argument('--url', dest='server_url', metavar="URL", default=None,
         help=f"Jenkins server URL. Default is {Config().server_url} or JENKINS_URL from environment")
     parser.add_argument('--wipews', dest='wipe_workspace', default=False, action="store_true",
@@ -1192,6 +1317,10 @@ Replace groovy script for 'foobaz' project, then build while showing console out
   {prog} foobaz --groovy newscript -bc
 Get config.xml for 'foobaz' project:
   {prog} foobaz --get-config=foobaz.config.xml
+Get file from workspace of last build of 'foobaz' project:
+  {prog} foobaz --ws build/output.log
+Get zipped directory of workspace of last build of 'foobaz' project:
+  {prog} foobaz --ws build/zip
 
 JOB/ID is the Jenkins job name and ID where ID is numeric ID or a possibly
 abbreviated (and unique) substring of one of following build names:
@@ -1292,6 +1421,9 @@ if __name__ == "__main__":
 
         elif opt.get_console:
             jen.get_console_output()
+
+        elif opt.ws_get:
+            jen.workspace_save_file(opt.ws_get, "")
 
         if opt.get_artifacts:
             jr = jen.build_get()
