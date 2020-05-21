@@ -539,6 +539,41 @@ or the certificate has expired.
             if item['name'] == name:
                 yield item
 
+    def list_nodes(self):
+        w = 13
+        def print_computer(i, j):
+            _class = j.get('_class')
+            if not _class:
+                return
+
+            print(f"{i:3d} {_class:{w}} '{j['displayName']}' {j.get('description')}")
+            for k in ('labels', 'idle', 'numExecutors'):
+                if k not in j:
+                    continue
+                print(f"    {k:{w}} {j.get(k)}")
+
+        for i, item in enumerate(self.get_nodes(search=self.job_name)):
+            print_computer(i, item)
+
+    def get_nodes(self, search=None):
+        def fixup_computer(j):
+            _class = j.get('_class')
+            _class = _class.split(".")[-1].replace("Hudson$", "").replace("Computer", "")
+            j['_class'] = _class
+
+            j['labels'] = " ".join(x['name'] for x in j['assignedLabels'])
+            return j
+
+        url = f"{self.server_url}/computer"
+        jr = jen.request_api_json(url)
+        for item in jr.get('computer'):
+            c = fixup_computer(item)
+            if not search:
+                yield c
+            elif search in c['labels'] or search in c['displayName']:
+                yield c
+
+
     @staticmethod
     def job_get_param_definition(jr):
         props = jr.get('property')
@@ -1119,6 +1154,8 @@ See command-line examples with: {prog} -hh
         help=f"List all projects")
     parser.add_argument('--que', dest='list_queue', default=False, action="store_true",
         help=f"List Jenkins queue")
+    parser.add_argument('--nodes', dest='list_nodes', default=False, action="store_true",
+        help=f"List Jenkins build nodes/machines")
     parser.add_argument('--url', dest='server_url', metavar="URL", default=None,
         help=f"Jenkins server URL. Default is {Config().server_url} or JENKINS_URL from environment")
     parser.add_argument('--wipews', dest='wipe_workspace', default=False, action="store_true",
@@ -1266,6 +1303,9 @@ if __name__ == "__main__":
 
         if opt.list_queue:
             jen.list_queue()
+
+        if opt.list_nodes:
+            jen.list_nodes()
 
         sys.exit(0)
 
