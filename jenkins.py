@@ -462,6 +462,20 @@ or the certificate has expired.
             raise ValueError(f"Missing job ID. Try again with something like: {prog} ... {jen.job_name}/last")
         return self.get_job_url(name) + f"/{job_id}"
 
+    def list_projects(self):
+        url = f"{self.server_url}"
+        jr = jen.request_api_json(url, {'tree': "jobs[name]"})
+        jobs = jr.get('jobs')
+        for job in jobs:
+            _class = job.get('_class')
+            if _class:
+                _class = _class.split(".")[-1]
+            name = job.get('name')
+            if self.verbose:
+                print(name, _class)
+            else:
+                print(name)
+
     def get_queue(self):
         def fixup_queue_item(j):
             _class = j.get('_class')
@@ -1073,6 +1087,8 @@ See command-line examples with: {prog} -hh
         help="Read FILE and post as config.xml to Jenkins job JOBNAME")
     parser.add_argument('--auth', dest='auth', metavar="NAME_TOK", default=None,
         help=f"Username and API token, separated by colon. Usually required for --get-config, --post-config")
+    parser.add_argument('--list', dest='list', default=False, action="store_true",
+        help=f"List all projects")
     parser.add_argument('--url', dest='server_url', metavar="URL", default=None,
         help=f"Jenkins server URL. Default is {Config().server_url} or JENKINS_URL from environment")
     parser.add_argument('--no-progress', dest='log_progress', default=True, action="store_false",
@@ -1159,6 +1175,9 @@ if __name__ == "__main__":
     jen.echo_verb(f"Read config from {conffile}")
 
     try:
+        if opt.list:
+            jen.list_projects()
+
         if opt.get_config:
             if not jen.auth_user:
                 raise ValueError("--auth NAME:APITOKEN is required for --get-config")
