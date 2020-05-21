@@ -476,6 +476,27 @@ or the certificate has expired.
             else:
                 print(name)
 
+    def list_queue(self):
+        w = 13
+        def print_queue_item(i, j):
+            _class = j.get('_class')
+            if not _class:
+                return
+
+            print(f"{i:3d} {_class:{w}} '{j['name']}' {j.get('id')}")
+
+            # 'blocked', 'buildableStartMilliseconds',
+            #for k in ('name', 'id', 'inQueueSince', 'timestamp', 'why'):
+            for k in ('inQueueSince', 'timestamp', 'why'):
+                if k not in j:
+                    continue
+                print(f"    {k:{w}} {j.get(k)}")
+
+        for i, item in enumerate(self.get_queue()):
+            if self.job_name and self.job_name != item['name']:
+                continue
+            print_queue_item(i, item)
+
     def get_queue(self):
         def fixup_queue_item(j):
             _class = j.get('_class')
@@ -1096,6 +1117,8 @@ See command-line examples with: {prog} -hh
         help=f"Username and API token, separated by colon. Usually required for --get-config, --post-config")
     parser.add_argument('--list', dest='list', default=False, action="store_true",
         help=f"List all projects")
+    parser.add_argument('--que', dest='list_queue', default=False, action="store_true",
+        help=f"List Jenkins queue")
     parser.add_argument('--url', dest='server_url', metavar="URL", default=None,
         help=f"Jenkins server URL. Default is {Config().server_url} or JENKINS_URL from environment")
     parser.add_argument('--wipews', dest='wipe_workspace', default=False, action="store_true",
@@ -1240,6 +1263,9 @@ if __name__ == "__main__":
 
         if opt.get_info:
             jen.print_project(all_builds=opt.all)
+
+        if opt.list_queue:
+            jen.list_queue()
 
         sys.exit(0)
 
