@@ -1040,6 +1040,13 @@ or as build_params_default in config file.
                 f.write(response.content)
 
 
+    def workspace_wipeout(self, name=None):
+        url = self.get_job_url(name=name)
+        self.echo_info(f"Wiping workspace of {self.job_name}")
+        url = f"{url}/doWipeOutWorkspace"
+        return self.request(url, method="POST", auth=False, data="")
+
+
 prog = os.path.basename(__file__)
 
 def parser_create():
@@ -1091,6 +1098,8 @@ See command-line examples with: {prog} -hh
         help=f"List all projects")
     parser.add_argument('--url', dest='server_url', metavar="URL", default=None,
         help=f"Jenkins server URL. Default is {Config().server_url} or JENKINS_URL from environment")
+    parser.add_argument('--wipews', dest='wipe_workspace', default=False, action="store_true",
+        help=f"Wipe out (delete) workspace of JOB_NAME")
     parser.add_argument('--no-progress', dest='log_progress', default=True, action="store_false",
         help="Suppress wait progress messages")
     parser.add_argument('-d', dest='log_http', metavar='srhtj', default="",
@@ -1177,6 +1186,11 @@ if __name__ == "__main__":
     try:
         if opt.list:
             jen.list_projects()
+
+        if getattr(opt, 'wipe_workspace', None):
+            # not working, Response: 404 Not Found (method was POST)
+            jen.workspace_wipeout()
+            sys.exit(0)
 
         if opt.get_config:
             if not jen.auth_user:
