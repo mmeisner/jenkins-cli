@@ -197,6 +197,7 @@ class Config(object):
         self.build_params_default = "delay=0"
         self.console_poll_interval = 2
         self.console_log_dir = "/tmp/jenkins-log"
+        self.stop_job_on_user_abort = True
 
 
     def read(self, obj, filename=None):
@@ -288,6 +289,7 @@ class Jenkins(object):
         self.auth_password = ""
         self.console_poll_interval = 2
         self.console_log_dir = "/tmp/jenkins-log"
+        self.stop_job_on_user_abort = False
 
         self._conn_ok = False
 
@@ -1449,4 +1451,14 @@ if __name__ == "__main__":
     except (requests.exceptions.RequestException, JenkinsException, ValueError) as e:
         print(f"{color.error}{e}{fg.reset}")
         print_traceback_tip()
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print(f"{color.error}User abort{fg.reset}")
+        if opt.do_build:
+            if jen.stop_job_on_user_abort:
+                jen.job_stop()
+                print(f"""stopped job because {Config.FILENAME} contains 'stop_job_on_user_abort=yes'""")
+            else:
+                print(f"""Not stopping job because
+{Config.FILENAME} deos not contain 'stop_job_on_user_abort=yes'""")
         sys.exit(1)
