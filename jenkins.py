@@ -732,9 +732,11 @@ or the certificate has expired.
         job_url = self.get_job_url(name=name)
         url = f"{job_url}/config.xml"
         response = self.request(url, auth=True)
-        if not response.text.startswith('<?xml version="1.1"') \
+        if not response.text.startswith('<?xml version=') \
             or not '<flow-definition plugin="workflow-job@' in response.text:
-            raise ValueError("Unknown, non-XML or non-workflow-job content")
+            self.echo_note("""Content of response is not exactly as expected ...
+Please check the output to see if it really is config.xml""")
+            #raise ValueError("Unknown, non-XML or non-workflow-job content")
 
         if filename:
             open(filename, "w").write(response.text)
