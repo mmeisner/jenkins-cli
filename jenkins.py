@@ -295,6 +295,8 @@ class Jenkins(object):
 
         self.job_name = ""
         self.job_id = ""
+        self.job_id_low = 0
+        self.job_id_high = 0
         self.job_started = None
         self.artifacts = None
 
@@ -351,12 +353,33 @@ class Jenkins(object):
 
         return response
 
+    def job_id_iter(self):
+        """
+        Iterator over all job_id's if user supplied something like `foobaz/23..28
+        """
+        if self.job_id_low > 0 and self.job_id_high > 0:
+            for job_id in range(self.job_id_low, self.job_id_high + 1):
+                yield job_id
+        else:
+            yield self.job_id
+
     def set_job_name_and_id(self, job_name, job_id='lastSuccessfulBuild'):
         if not job_name:
             return
         parts = job_name.split("/")
         if len(parts) == 2:
             job_name, job_id = parts
+
+        if ".." in job_id:
+            parts = job_id.split("..")
+            if len(parts) == 2:
+                lo, hi = int(parts[0]), int(parts[1])
+                if lo > hi:
+                    lo, hi = hi, lo
+                self.job_id_low, self.job_id_high = lo, hi
+                job_id = str(lo)
+                #print(f"job_id_low={self.job_id_low} job_id_high={self.job_id_high}")
+                #sys.exit(0)
 
         self.job_name = job_name
         self.job_id = job_id
@@ -374,10 +397,9 @@ class Jenkins(object):
             raise ValueError(f"job_id matches several build types: {m}")
         if len(m) == 0:
             bts = ",".join(Jenkins.BUILD_NAMES)
-            raise ValueError(f"Bad job_id. Allowed job_id is numeric or one of: {bts}")
+            raise ValueError(f"Bad job_id: '{job_id}'\nAllowed job_id is numeric or one of: {bts}")
 
         self.job_id = m[0]
-
 
     def request(self, url, method="GET", params=None, auth=None, **kwargs):
         """
@@ -832,30 +854,16 @@ You can inspect the Jenkins server logs for the exact cause here:
 
     def make_output_filename_and_symlink(self, with_job_id=True):
         logpath_job = f"{self.console_log_dir}/{self.job_name}"
-        symlink = f"{logpath_job}-latest"
+        symlink = f"{logpath_job}-latest" if is_posix() else ""
         logfile = f"{logpath_job}"
         if with_job_id:
             logfile += f"-{self.job_id}"
         os.makedirs(os.path.dirname(logpath_job), exist_ok=True)
         return logfile, symlink
 
-    def get_console_output(self, name=None, job_id=None):
-        """
-        https://jenkins.lan/job/openwrt/17/logText/progressiveText?start=0
-        """
-        job_url = self.get_job_id_url(name=name, job_id=job_id)
-        fout = None
-        if self.console_output_file:
-            logfile, symlink = self.make_output_filename_and_symlink()
-            self.console_output_file = f"{logfile}-console.log"
-            fout = open(self.console_output_file, "w")
-            if is_posix():
-                symlink = f"{symlink}-console.log"
-                if os.path.islink(symlink):
-                    os.remove(symlink)
-                os.symlink(os.path.basename(self.console_output_file), symlink)
-                self.echo_info(f"Wrote symlink {symlink}")
+    def get_console_output_for_job(self, name, job_id, fout, stdout):
 
+        job_url = self.get_job_id_url(name=name, job_id=job_id)
         text_size = 0
         started_at = time.time()
         last_output_at = started_at
@@ -867,7 +875,8 @@ You can inspect the Jenkins server logs for the exact cause here:
             if r.text:
                 last_output_at = time.time()
                 last_progress_at = last_output_at
-                sys.stdout.write(r.text)
+                if stdout:
+                    sys.stdout.write(r.text)
                 if fout:
                     fout.write(r.text)
                     fout.flush()
@@ -884,10 +893,34 @@ You can inspect the Jenkins server logs for the exact cause here:
 
                 since_start = deltatimeToHumanStr(time.time() - started_at)
                 since_output = deltatimeToHumanStr(time.time() - last_output_at)
-                self.echo_progress(f"Waiting for output: started {since_start} ago, last output {since_output} ago")
+                self.echo_progress(
+                    f"Waiting for output: started {since_start} ago, last output {since_output} ago")
 
-        if self.console_output_file:
-            self.echo_info(f"Wrote console output to {self.console_output_file}")
+    def get_console_output(self):
+        """
+        https://jenkins.lan/job/openwrt/17/logText/progressiveText?start=0
+        """
+        # only print to stdout if we are getting log of a single job
+        is_only_one_job = len(list(self.job_id_iter())) == 1
+
+        for job_id in self.job_id_iter():
+            fout = None
+            if self.console_output_file:
+                logfile, symlink = self.make_output_filename_and_symlink()
+                self.console_output_file = f"{logfile}-console.log"
+                fout = open(self.console_output_file, "w")
+                if symlink and is_only_one_job:
+                    symlink = f"{symlink}-console.log"
+                    if os.path.islink(symlink):
+                        os.remove(symlink)
+                    os.symlink(os.path.basename(self.console_output_file), symlink)
+
+            self.get_console_output_for_job(name=None, job_id=job_id, fout=fout, stdout=is_only_one_job)
+
+            if self.console_output_file:
+                self.echo_info(f"Wrote console output to {self.console_output_file}")
+                if symlink and is_only_one_job:
+                    self.echo_info(f"Wrote symlink {symlink}")
 
     def req_waitfor_key_value(self, url, key, wait_msg="result", timeout=60, interval=1):
         """
@@ -1284,7 +1317,7 @@ See command-line examples with: {prog} -hh
     parser.add_argument('--nodes', dest='list_nodes', default=False, action="store_true",
         help=f"List Jenkins build nodes/machines")
     parser.add_argument('--ws', dest='ws_get', metavar="PATH", default="", type=str,
-        help=f"Get file PATH from workspace")
+        help=f"Get file PATH from workspace. Use 'some/sub/dir/zip' to get zip of directory")
     parser.add_argument('--url', dest='server_url', metavar="URL", default=None,
         help=f"Jenkins server URL. Default is {Config().server_url} or JENKINS_URL from environment")
     parser.add_argument('--wipews', dest='wipe_workspace', default=False, action="store_true",
@@ -1325,6 +1358,8 @@ Get file from workspace of last build of 'foobaz' project:
   {prog} foobaz --ws build/output.log
 Get zipped directory of workspace of last build of 'foobaz' project:
   {prog} foobaz --ws build/zip
+Get console logs for build jobs 42 through 50:
+  {prog} foobaz/42..50 -c
 
 JOB/ID is the Jenkins job name and ID where ID is numeric ID or a possibly
 abbreviated (and unique) substring of one of following build names:
