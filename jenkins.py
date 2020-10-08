@@ -1354,13 +1354,6 @@ if __name__ == "__main__":
 
     color_enable()
 
-    url = os.environ.get("JENKINS_URL")
-    jen.server_url = opt.server_url or url or jen.server_url
-    job_id = getattr(opt, 'job_id', "")
-    jen.set_job_name_and_id(opt.jobname, job_id)
-    if not jen.job_id:
-        jen.job_id = "lastBuild"
-
     env_auth = os.environ.get("JENKINS_AUTH")
     auth = opt.auth or env_auth or f"{jen.auth_user}:{jen.auth_password}"
     if auth:
@@ -1377,6 +1370,13 @@ if __name__ == "__main__":
     jen.echo_verb(f"Read config from {conffile}")
 
     try:
+        url = os.environ.get("JENKINS_URL")
+        jen.server_url = opt.server_url or url or jen.server_url
+        job_id = getattr(opt, 'job_id', "")
+        jen.set_job_name_and_id(opt.jobname, job_id)
+        if not jen.job_id:
+            jen.job_id = "lastBuild"
+
         if opt.list:
             jen.list_projects()
 
