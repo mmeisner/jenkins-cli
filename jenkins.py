@@ -1281,57 +1281,68 @@ See command-line examples with: {prog} -hh
     parser = argparse.ArgumentParser(
         description=description, epilog=epilog, add_help=False, formatter_class=argparse.RawDescriptionHelpFormatter)
 
-    parser.add_argument(dest='jobname', metavar='JOB[/ID]', type=str, default=None, nargs='?',
-        help="Jenkins job name (and build ID)")
-    parser.add_argument('-p', dest='params', metavar='PARAMS', type=str, default="",
-        help="Job params given as comma separated list of key=value pairs, e.g. 'foo=1,baz=10'")
-    parser.add_argument('-b', dest='do_build', default=False, action="store_true",
+    args_pos = parser.add_argument_group("Position arguments")
+    args_pos.add_argument(dest='jobname', metavar='JOB[/ID]', type=str, default=None, nargs='?',
+        help="Jenkins job name (and build ID). This is a mandatory argument for many commands")
+
+    args_build = parser.add_argument_group("Build arguments")
+    args_build.add_argument('-b', dest='do_build', default=False, action="store_true",
         help="Start build job")
-    parser.add_argument('-B', dest='stop_build', action='count', default=0,
+    args_build.add_argument('-p', dest='params', metavar='PARAMS', type=str, default="",
+        help="Job params given as comma separated list of key=value pairs, e.g. 'foo=1,baz=10'")
+    args_build.add_argument('-B', dest='stop_build', action='count', default=0,
         help="Stop build job. Give option twice to cancel job")
-    parser.add_argument('-c', dest='get_console', default=False, action="store_true",
+    args_build.add_argument('-c', dest='get_console', default=False, action="store_true",
         help="Get console ouput for job")
-    parser.add_argument('-a', dest='all', default=False, action="store_true",
-        help="Get all (e.g. get all build of proejct)")
-    parser.add_argument('-o', dest='outdir', metavar='DIR', default=".",
-        help="Output directory for build artifacts")
-    parser.add_argument('-i', dest='get_info', default=False, action="store_true",
-        help="Get info for project")
-    # parser.add_argument('-j', dest='job_id', metavar="ID", default="lastSuccessfulBuild",
-    #     help="Job ID, e.g. for fetching artifacts from specific build job. Default is 'lastSuccessfulBuild'")
-    parser.add_argument('-w', dest='job_wait', default=False, action="store_true",
+    args_build.add_argument('-w', dest='job_wait', default=False, action="store_true",
         help="Wait for job completion. Useful when job is already running")
-    parser.add_argument('-t', dest='timeout', type=int, default=None,
+    args_build.add_argument('-t', dest='timeout', type=int, default=None,
         help="Build completion timeout (when -b option is given). Default is auto-computed")
-    parser.add_argument('--arti', dest='get_artifacts', default=False, action="store_true",
-        help="Get artifacts from build and save them")
-    parser.add_argument('--groovy',  dest='groovy', metavar='FILE', type=str,
+
+    groovy_args = parser.add_argument_group("Jenkins config and groovy commands/actions")
+    groovy_args.add_argument('--groovy',  dest='groovy', metavar='FILE', type=str,
         help="Get config.xml, replace groovy script with FILE and post new config")
-    parser.add_argument('--get-config',  dest='get_config', metavar='FILE', type=str,
+    groovy_args.add_argument('--get-groovy',  dest='get_groovy', action="store_true",
+        help="Get config.xml, extract groovy script and print it")
+    groovy_args.add_argument('--get-config',  dest='get_config', metavar='FILE', type=str,
         help="Get config.xml and save to FILE")
-    parser.add_argument('--post-config',  dest='post_config', metavar='FILE', type=str,
+    groovy_args.add_argument('--post-config',  dest='post_config', metavar='FILE', type=str,
         help="Read FILE and post as config.xml to Jenkins job JOBNAME")
-    parser.add_argument('--auth', dest='auth', metavar="NAME_TOK", default=None,
-        help=f"Username and API token, separated by colon. Usually required for --get-config, --post-config")
-    parser.add_argument('--list', dest='list', default=False, action="store_true",
+
+    args_other = parser.add_argument_group("Misc commands/actions")
+    args_other.add_argument('--arti', dest='get_artifacts', default=False, action="store_true",
+        help="Get artifacts from build and save them")
+    # args_other.add_argument('-j', dest='job_id', metavar="ID", default="lastSuccessfulBuild",
+    #     help="Job ID, e.g. for fetching artifacts from specific build job. Default is 'lastSuccessfulBuild'")
+    args_other.add_argument('-o', dest='outdir', metavar='DIR', default=".",
+        help="Output directory for build artifacts")
+    args_other.add_argument('-i', dest='get_info', default=False, action="store_true",
+        help="Get project info summary")
+    args_other.add_argument('-a', dest='all', default=False, action="store_true",
+        help="List all builds of project")
+    args_other.add_argument('--list', dest='list', default=False, action="store_true",
         help=f"List all projects")
-    parser.add_argument('--que', dest='list_queue', default=False, action="store_true",
+    args_other.add_argument('--que', dest='list_queue', default=False, action="store_true",
         help=f"List Jenkins queue")
-    parser.add_argument('--nodes', dest='list_nodes', default=False, action="store_true",
+    args_other.add_argument('--nodes', dest='list_nodes', default=False, action="store_true",
         help=f"List Jenkins build nodes/machines")
-    parser.add_argument('--ws', dest='ws_get', metavar="PATH", default="", type=str,
+    args_other.add_argument('--ws', dest='ws_get', metavar="PATH", default="", type=str,
         help=f"Get file PATH from workspace. Use 'some/sub/dir/zip' to get zip of directory")
-    parser.add_argument('--url', dest='server_url', metavar="URL", default=None,
-        help=f"Jenkins server URL. Default is {Config().server_url} or JENKINS_URL from environment")
-    parser.add_argument('--wipews', dest='wipe_workspace', default=False, action="store_true",
+    args_other.add_argument('--wipews', dest='wipe_workspace', default=False, action="store_true",
         help=f"Wipe out (delete) workspace of JOB_NAME")
-    parser.add_argument('--no-progress', dest='log_progress', default=True, action="store_false",
-        help="Suppress wait progress messages")
-    parser.add_argument('-d', dest='log_http', metavar='srhtj', default="",
+
+    option_args = parser.add_argument_group("Misc options")
+    option_args.add_argument('-d', dest='log_http', metavar='srhtj', default="",
         help='Log HTTP transactions: ' + Jenkins.get_log_help())
-    parser.add_argument('-v', dest='verbose', action='count', default=0,
+    option_args.add_argument('--no-progress', dest='log_progress', default=True, action="store_false",
+        help="Suppress wait progress messages")
+    option_args.add_argument('--url', dest='server_url', metavar="URL", default=None,
+        help=f"Jenkins server URL. Default is {Config().server_url} or JENKINS_URL from environment")
+    option_args.add_argument('--auth', dest='auth', metavar="NAME_TOK", default=None,
+        help=f"Username and API token, separated by colon. Usually required for --get-config, --post-config")
+    option_args.add_argument('-v', dest='verbose', action='count', default=0,
         help='Be more verbose')
-    parser.add_argument('-h', dest='help', action='count', default=0,
+    option_args.add_argument('-h', dest='help', action='count', default=0,
         help='Show usage. Give option twice to see usage examples')
     return parser
 
