@@ -31,7 +31,7 @@ Style.__new__.__defaults__ = ("",) * len(Style._fields)
 fg = Color()
 style = Style()
 
-ColorLog = collections.namedtuple('ColorLog', "send recv info note progress error")
+ColorLog = collections.namedtuple('ColorLog', "send recv info note progress error warn")
 ColorLog.__new__.__defaults__ = ("",) * len(ColorLog._fields)
 color = ColorLog()
 
@@ -49,6 +49,7 @@ def color_enable(force=False):
             note=fg.iyellow,
             progress = fg.white + style.dim,
             error=fg.ired,
+            warn=fg.iyellow,
         )
 
 def xml_get_block_within_tag(xmltext, tag="script"):
@@ -199,7 +200,6 @@ class Config(object):
         self.console_log_dir = "/tmp/jenkins-log"
         self.stop_job_on_user_abort = True
 
-
     def read(self, obj, filename=None):
         """
 
@@ -237,6 +237,7 @@ class Config(object):
                 setattr(obj, name, value)
                 #print(f"setattr {name} = {value}")
 
+        obj.config_was_read_ok = True
         return filename
 
 
@@ -283,7 +284,9 @@ class Jenkins(object):
         # disable InsecureRequestWarning: "Unverified HTTPS request" warnings
         requests.packages.urllib3.disable_warnings(requests.urllib3.exceptions.InsecureRequestWarning)
 
-        self.server_url = "https://jenkins.lan"
+        # Configurable settings (read form config file)
+        self.config_was_read_ok = False
+        self.server_url = None
         self.check_certificate = True
         self.auth_user = ""
         self.auth_password = ""
@@ -1402,11 +1405,19 @@ if __name__ == "__main__":
     jen.log_enable(opt.log_http)
     jen.log_progress = opt.log_progress
 
-    jen.echo_verb(f"Read config from {conffile}")
+    if jen.config_was_read_ok:
+        jen.echo_verb(f"Read config from {conffile}")
+    else:
+        print(f"{color.warn}WARNING: Config file not found{fg.reset}")
 
     try:
         url = os.environ.get("JENKINS_URL")
         jen.server_url = opt.server_url or url or jen.server_url
+        if not jen.server_url:
+            raise ValueError(f"Jenkins URL not set")
+        if not jen.server_url.startswith("http"):
+            raise ValueError(f"Jenkins URL invalid")
+
         job_id = getattr(opt, 'job_id', "")
         jen.set_job_name_and_id(opt.jobname, job_id)
         if not jen.job_id:
