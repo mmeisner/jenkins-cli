@@ -641,7 +641,7 @@ or the certificate has expired.
             _class = _class.split(".")[-1]
             jr['class'] = _class
 
-        # Make disctionary of symbolic build names to build number,
+        # Make dictionary of symbolic build names to build number,
         # e.g. { 'last': 94, 'lastSuccessful': 94, 'lastFailed': 92, ... }
         name_to_number = {}
         for b in Jenkins.BUILD_NAMES[:4]:
@@ -1504,6 +1504,8 @@ if __name__ == "__main__":
             jen.fetch_artifacts(opt.outdir, artifacts)
 
         if opt.get_info:
+            jen.print_project(all_builds=opt.all)
+        elif opt.all:
             jen.print_project(all_builds=opt.all)
 
         if opt.list_queue:
