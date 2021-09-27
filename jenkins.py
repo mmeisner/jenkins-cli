@@ -240,6 +240,11 @@ class Config(object):
         obj.config_was_read_ok = True
         return filename
 
+    def write(self):
+        d = { name:getattr(self, name) for name in self.__dict__.keys() }
+        cfg = configparser.ConfigParser()
+        cfg["global"] = d
+        cfg.write(sys.stdout)
 
 class Jenkins(object):
     """
@@ -1340,6 +1345,8 @@ See command-line examples with: {prog} -hh
         help=f"Jenkins server URL. Default is {Config().server_url} or JENKINS_URL from environment")
     option_args.add_argument('--auth', dest='auth', metavar="NAME_TOK", default=None,
         help=f"Username and API token, separated by colon. Usually required for --get-config, --post-config")
+    option_args.add_argument('--makeconf', dest='write_config', action='store_true',
+        help='Write a configuration file template')
     option_args.add_argument('-v', dest='verbose', action='count', default=0,
         help='Be more verbose')
     option_args.add_argument('-h', dest='help', action='count', default=0,
@@ -1352,6 +1359,8 @@ def print_examples():
     print(f"""\
 {prog} command-line examples:
 
+Write default/template configuration:
+  {prog} --makeconf > ${HOME}/.jenkins.ini
 build 'sandbox' project:
   {prog} -b sandbox
 Get information for 'sandbox' project:
@@ -1388,6 +1397,9 @@ if __name__ == "__main__":
             print_examples()
         else:
             parser.print_help()
+        sys.exit(0)
+    elif opt.write_config:
+        Config().write()
         sys.exit(0)
 
     def print_traceback_tip():
