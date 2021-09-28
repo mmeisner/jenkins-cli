@@ -355,6 +355,8 @@ class Jenkins(object):
         # if self.log_req or force:
         #     print(f"{color.send}{response.request.method} {response.url}{fg.reset}")
         if self.log_resp_headers or force:
+            print(f"{color.send}Request headers: {response.request.headers}{fg.reset}")
+            #print(f"{color.send}Auth: {response.request.auth}{fg.reset}")
             print(f"{color.recv}Response: {response.status_code} {response.reason}\n{response.headers}{fg.reset}")
         elif self.log_resp_status:
             print(f"{color.recv}Response: {response.status_code} {response.reason}{fg.reset}")
