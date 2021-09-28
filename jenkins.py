@@ -245,6 +245,7 @@ class Config(object):
         cfg = configparser.ConfigParser()
         cfg["global"] = d
         cfg.write(sys.stdout)
+        print("# note that the username is without the email domain, e.g. 'foo' instead of 'foo@bla.org'")
 
 class Jenkins(object):
     """
@@ -411,6 +412,13 @@ class Jenkins(object):
 
         self.job_id = m[0]
 
+    def assert_auth_is_valid(self):
+        s = "Add it to the jenkins config file or supply it with --auth option"
+        if not self.auth_user:
+            raise ValueError(f"Jenkins username is not set: {s}")
+        if not self.auth_password:
+            raise ValueError(f"Jenkins password/API-token is not set: {s}")
+
     def request(self, url, method="GET", params=None, auth=None, **kwargs):
         """
         see https://stackoverflow.com/questions/16907684/fetching-a-url-from-a-basic-auth-protected-jenkins-server-with-urllib2
@@ -424,7 +432,8 @@ class Jenkins(object):
 
         if self.log_req:
             q = "?" + urllib.parse.urlencode(params) if params else ""
-            print(f"{color.send}{method} {url}{q}{fg.reset}")
+            auth_str = f"with HTTPBasicAuth(username={self.auth_user})" if auth else ""
+            print(f"{color.send}{method} {url}{q}{fg.reset} {auth_str}")
 
         response = requests.request(method, url, params=params, verify=self.check_certificate, auth=auth, **kwargs)
 
@@ -1457,18 +1466,15 @@ if __name__ == "__main__":
             sys.exit(0)
 
         if opt.get_config:
-            if not jen.auth_user:
-                raise ValueError("--auth NAME:APITOKEN is required for --get-config")
+            jen.assert_auth_is_valid()
             jen.get_config_xml(filename=opt.get_config)
 
         if opt.post_config:
-            if not jen.auth_user:
-                raise ValueError("--auth NAME:APITOKEN is required for --post-config")
+            jen.assert_auth_is_valid()
             jen.post_config_xml(filename=opt.post_config)
 
         if opt.groovy:
-            if not jen.auth_user:
-                raise ValueError("--auth NAME:APITOKEN is required for --groovy")
+            jen.assert_auth_is_valid()
             jen.get_config_replace_script_and_post(filename=opt.groovy)
 
         if opt.stop_build:
