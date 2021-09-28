@@ -52,51 +52,22 @@ def color_enable(force=False):
             warn=fg.iyellow,
         )
 
-def xml_get_block_within_tag(xmltext, tag="script"):
-    # TODO: use minidom?
-    block = []
-    inscript = False
-    for line in xmltext.splitlines():
-        stripped = line.strip()
-        if inscript:
-            if stripped.startswith(f"</{tag}>"):
-                break
-            block.append(line)
-        elif stripped.startswith(f"<{tag}>"):
-            inscript = True
-            block.append(line.replace(f"<{tag}>", ""))
+def xml_get_first_child_node_of_tag(dom, tag):
+    """
+    See https://docs.python.org/3.6/library/xml.dom.minidom.html
+    See https://docs.python.org/3.6/library/xml.dom.html
 
-    return "\n".join(block)
-
-
-def xml_replace_script(xmltext, script_text):
-    # TODO: use minidom?
-    num_scripts = xmltext.count("<script>")
-    if num_scripts > 1:
-        raise ValueError(f"XML contains {num_scripts} <script>'s but expected only one")
-    script_text = script_text\
-        .replace("&", "&amp;")\
-        .replace("<", "&lt;") \
-        .replace(">", "&gt;") \
-        .replace("\"", "&quot;")
-
-    inscript = False
-    newxml = []
-    for line in xmltext.splitlines():
-        stripped = line.strip()
-        if inscript:
-            if stripped.endswith("</script>"):
-                newxml.append("<script>")
-                newxml += script_text.splitlines()
-                newxml.append("</script>")
-                inscript = False
-        elif stripped.startswith("<script>"):
-            inscript = True
-        else:
-            newxml.append(line)
-
-    s = "\n".join(newxml)
-    return s
+    :param dom: result of minidom.parseString(config_xml)
+    :param tag: name of XML tag
+    :return:
+    """
+    node = dom.getElementsByTagName(tag)
+    if node:
+        node = node[0].firstChild
+        if node.nodeType == minidom.Node.TEXT_NODE:
+            return node
+    else:
+        return None
 
 def is_posix():
     try:
@@ -763,12 +734,12 @@ or the certificate has expired.
             #url = f"{self.server_url}"
         return self.request_api_json(url, params=params)
 
-    def get_config_xml(self, filename=None, name=None):
+    def get_config_as_xml_and_dom(self, filename=None, name=None):
         """
         Get Jenkins job config XML
 
-        :param name:   Jenkins job name
-        :return:
+        :param name:  Jenkins job name
+        :return:      XML text, xml.dom.minidom.Document object
         """
         job_url = self.get_job_url(name=name)
         url = f"{job_url}/config.xml"
@@ -777,7 +748,6 @@ or the certificate has expired.
             or not '<flow-definition plugin="workflow-job@' in response.text:
             self.echo_note("""Content of response is not exactly as expected ...
 Please check the output to see if it really is config.xml""")
-            #raise ValueError("Unknown, non-XML or non-workflow-job content")
 
         if filename:
             open(filename, "w").write(response.text)
@@ -785,32 +755,7 @@ Please check the output to see if it really is config.xml""")
         else:
             self.echo_info(f"Fetched {self.job_name} config.xml")
 
-        return response.text
-
-
-    def get_config_item(self, job_name=None, tag="authToken"):
-        """
-        See https://docs.python.org/3.6/library/xml.dom.minidom.html
-        See https://docs.python.org/3.6/library/xml.dom.html
-
-        :param job_name:
-        :param tag:
-        :return:
-        """
-        config_xml = self.get_config_xml(name=job_name)
-
-        dom = minidom.parseString(config_xml)
-        elems = dom.getElementsByTagName(tag)
-        if not elems:
-            return None
-        children = elems[0].childNodes
-        if not children:
-            return None
-        child = children[0]
-        if child.nodeType == minidom.Node.TEXT_NODE:
-            return child.nodeValue
-
-        return None
+        return response.text, minidom.parseString(response.text)
 
     def get_system_log(self):
         url = f"{self.server_url}/api/system/logs"
@@ -852,22 +797,31 @@ You can inspect the Jenkins server logs for the exact cause here:
 """)
             raise
 
+    def get_groovy_script(self):
+        xml, dom = self.get_config_as_xml_and_dom()
+        node = xml_get_first_child_node_of_tag(dom, "script")
+        return node.nodeValue if node else ""
+
     def get_config_replace_script_and_post(self, filename):
-        script_text = open(filename, "r").read()
-        config_xml = self.get_config_xml()
+        xml, dom = self.get_config_as_xml_and_dom()
 
         ts = datetime.datetime.fromtimestamp(time.time())
         backup_file, _ = self.make_output_filename_and_symlink(with_job_id=False)
         backup_file += ts.strftime("-config.xml.%Y%m%d-%H%M%S")
-        open(backup_file, "w").write(config_xml)
+        open(backup_file, "w").write(xml)
         self.echo_info(f"Wrote backup of config.xml to {backup_file}")
 
-        new_xml = xml_replace_script(config_xml, script_text)
+        node = xml_get_first_child_node_of_tag(dom, "script")
+        if not node:
+            raise ValueError("<script> element not found in config")
+
+        script_text = open(filename, "r").read()
+        node.nodeValue = script_text
         self.echo_info(f"Replaced config.xml <script> with file '{filename}'")
 
         new_config, _ = self.make_output_filename_and_symlink(with_job_id=False)
         new_config += ts.strftime("-new-config.xml")
-        open(new_config, "w").write(new_xml)
+        open(new_config, "wb").write(dom.toxml('utf-8'))
         self.echo_info(f"Wrote new version of config.xml to {new_config}")
         self.post_config_xml(filename=new_config)
 
@@ -1467,15 +1421,19 @@ if __name__ == "__main__":
 
         if opt.get_config:
             jen.assert_auth_is_valid()
-            jen.get_config_xml(filename=opt.get_config)
+            jen.get_config_as_xml_dom(filename=opt.get_config)
 
         if opt.post_config:
             jen.assert_auth_is_valid()
             jen.post_config_xml(filename=opt.post_config)
 
-        if opt.groovy:
+        if opt.groovy or opt.get_groovy:
             jen.assert_auth_is_valid()
-            jen.get_config_replace_script_and_post(filename=opt.groovy)
+            if opt.get_groovy:
+                text = jen.get_groovy_script()
+                print(text)
+            if opt.groovy:
+                jen.get_config_replace_script_and_post(filename=opt.groovy)
 
         if opt.stop_build:
             if opt.stop_build == 1:
