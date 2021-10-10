@@ -1149,14 +1149,23 @@ or as build_params_default in config file.
             #self.join()
 
     def workspace_get_file(self, filepath):
-
+        # There seems to be a difference in the URL used to retrieve items
+        # from the workspace. Maybe it has something to do if the job is
+        # configured with or without concurrent builds.
+        # The two base URLs are:
+        #   "{jobid_url}/execution/node/{str(i)}/ws/{filepath}" (concurrent job)
+        #   "ws/{filepath}" (non-concurrent job)
+        # That has to be investigated further. For now we assume the simple case
+        # that there is only one workspace per job
+        # TODO: maybe we should automatically retry a directory fetch so the user
+        #       doesn't have to be made aware of the difference in the actual API.
+        #       and maybe we should also automatically unzip the zip file?
         def post_normal():
             resp = self.request(url, method="POST", auth=True)
-
             # This is a quick adhoc fix for determining whether we get an HTML
             # page listing files or if we got the actual file
             if 'X-Instance-Identity' in resp.headers:
-                self.echo_info(f"{filepath} seems to be a directory")
+                self.echo_info(f"{filepath} seems to be a directory: fetch a directory with: --ws {filepath}/zip")
                 return None
 
             return resp.content
@@ -1180,13 +1189,7 @@ or as build_params_default in config file.
             resp.close()
             return content
 
-        if not self.job_id:
-            self.job_id = "lastBuild"
-        jobid_url = self.get_job_id_url()
-        self.echo_info("Getting workspace file (trying various URLs...")
-
-        for i in range(10):
-            url = f"{jobid_url}/execution/node/{str(i)}/ws/{filepath}"
+        def request_transfer_and_wait():
             try:
                 waiter = Jenkins.Waiter(self, "Transferring")
                 waiter.start()
@@ -1195,35 +1198,54 @@ or as build_params_default in config file.
                 return content
 
             except requests.exceptions.HTTPError as e:
-                waiter.stop()
                 if e.response.status_code != 404:
                     raise
+            finally:
+                waiter.stop()
 
-        waiter.stop()
-        raise ValueError("Exhausted .../execution/node/<ID>/ws/... URL attempts")
+        # assume non-concurrent job
+        simple_job = True
+        if simple_job:
+            self.echo_info("Getting workspace file ...")
+            url_base = self.get_job_url()
+            url = f"{url_base}/ws/{filepath}"
+            return request_transfer_and_wait()
+        else:
+            self.echo_info("Getting workspace file (trying various URLs...)")
+            url_base = self.get_job_id_url(job_id="lastBuild")
+            for i in range(10):
+                url = f"{url_base}/execution/node/{str(i)}/ws/{filepath}"
+                return request_transfer_and_wait()
+            raise ValueError("Exhausted .../execution/node/<ID>/ws/... URL attempts")
 
-    def workspace_save_file(self, src_path, dest=""):
+
+    def workspace_save_file(self, path, dest_dir="."):
         """
 
-        :param src_path:
-        :param dest:
+        :param path:     path to workspace file/dir to fetch and save
+        :param dest_dir:
         :return:
         """
-        # request https://jenkins.lan/job/JOB/ID/execution/node/2/ws/build/*zip*/build.zip
-        if src_path.endswith("/zip"):
-            src_path = src_path[:-4]
-            src_base = os.path.basename(src_path)
-            src_path = f"{src_path}/*zip*/{src_base}.zip"
+        if path == "/zip":
+            # get entire workspace as a zip
+            path = f"*zip*/{self.job_name}.zip"
+        elif path.endswith("/zip"):
+            path = path[:-4]
+            path_base = os.path.basename(path)
+            path = f"{path}/*zip*/{path_base}.zip"
 
-        src_base = os.path.basename(src_path)
-        dest_path = f"{dest}/{src_base}" if dest else src_base
+        if not os.path.exists(dest_dir):
+            print(f"created {dest_dir}")
+            os.makedirs(dest_dir, exist_ok=True)
+
+        path_base = os.path.basename(path)
+        dest_path = f"{dest_dir}/{path_base}"
         if os.path.exists(dest_path):
-            raise FileExistsError(dest_path)
+            raise ValueError(f"{dest_path} already exists") # FileExistsError
 
         started = time.time()
-        content = self.workspace_get_file(src_path)
+        content = self.workspace_get_file(path)
         if not content:
-            print(f"{src_path} seems to be a directory")
             return
 
         elapsed = time.time() - started
@@ -1468,7 +1490,7 @@ if __name__ == "__main__":
             jen.get_console_output()
 
         elif opt.ws_get:
-            jen.workspace_save_file(opt.ws_get, "")
+            jen.workspace_save_file(opt.ws_get, dest_dir=opt.outdir)
 
         if opt.get_artifacts:
             jr = jen.build_get()
