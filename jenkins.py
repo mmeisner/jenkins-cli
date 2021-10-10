@@ -734,7 +734,7 @@ or the certificate has expired.
             #url = f"{self.server_url}"
         return self.request_api_json(url, params=params)
 
-    def get_config_as_xml_and_dom(self, filename=None, name=None):
+    def get_config_as_xml_and_dom(self, name=None):
         """
         Get Jenkins job config XML
 
@@ -748,12 +748,6 @@ or the certificate has expired.
             or not '<flow-definition plugin="workflow-job@' in response.text:
             self.echo_note("""Content of response is not exactly as expected ...
 Please check the output to see if it really is config.xml""")
-
-        if filename:
-            open(filename, "w").write(response.text)
-            self.echo_info(f"Wrote config.xml to {filename}")
-        else:
-            self.echo_info(f"Fetched {self.job_name} config.xml")
 
         return response.text, minidom.parseString(response.text)
 
@@ -1274,8 +1268,8 @@ See command-line examples with: {prog} -hh
         help="Get config.xml, replace groovy script with FILE and post new config")
     groovy_args.add_argument('--get-groovy',  dest='get_groovy', action="store_true",
         help="Get config.xml, extract groovy script and print it")
-    groovy_args.add_argument('--get-config',  dest='get_config', metavar='FILE', type=str,
-        help="Get config.xml and save to FILE")
+    groovy_args.add_argument('--get-config',  dest='get_config', action="store_true",
+        help="Get config.xml and print it")
     groovy_args.add_argument('--post-config',  dest='post_config', metavar='FILE', type=str,
         help="Read FILE and post as config.xml to Jenkins job JOBNAME")
 
@@ -1421,7 +1415,8 @@ if __name__ == "__main__":
 
         if opt.get_config:
             jen.assert_auth_is_valid()
-            jen.get_config_as_xml_dom(filename=opt.get_config)
+            xml, _ = jen.get_config_as_xml_and_dom()
+            print(xml)
 
         if opt.post_config:
             jen.assert_auth_is_valid()
