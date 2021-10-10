@@ -554,18 +554,29 @@ or the certificate has expired.
             if item['name'] == name:
                 yield item
 
-    def list_nodes(self):
+    def list_nodes(self, oneline=True):
         w = 13
         def print_computer(i, j):
             _class = j.get('_class')
             if not _class:
                 return
 
-            print(f"{i:3d} {_class:{w}} '{j['displayName']}' {j.get('description')}")
-            for k in ('labels', 'idle', 'numExecutors'):
-                if k not in j:
-                    continue
-                print(f"    {k:{w}} {j.get(k)}")
+            displayName = j['displayName']
+            desc = j.get('description')
+            labels = j.get('labels')
+            numExecutors = j.get('numExecutors')
+            idle_busy = "idle" if j.get('idle') is True else "busy"
+            on_offline = "offline" if j.get('offline') is True else "online"
+
+            if oneline:
+                print(f"{i:3d} {_class} {idle_busy} {numExecutors} {on_offline} '{displayName}' labels='{labels}' desc='{desc}'")
+            else:
+                print(f"{i:3d} {_class:{w}} '{displayName}' {desc}")
+                for k in ('labels', 'idle', 'numExecutors'):
+                    print(f"    {k:{w}} {j.get(k)}")
+
+        # if oneline:
+        #     print("num Class  Idle  Executors online name labels desc")
 
         for i, item in enumerate(self.get_nodes(search=self.job_name)):
             print_computer(i, item)
