@@ -1325,14 +1325,14 @@ def print_examples():
 {prog} command-line examples:
 
 Write default/template configuration:
-  {prog} --makeconf > ${HOME}/.jenkins.ini
+  {prog} --makeconf > ${{HOME}}/.jenkins.ini
 build 'sandbox' project:
   {prog} -b sandbox
 Get information for 'sandbox' project:
   {prog} -i sandbox
 Build 'house' project with parameters and save artifacts to /tmp:
   {prog} -b house -p doors=2,windows=8 --arti -o /tmp
-Save artifcats from last successful build:
+Save artifacts from last successful build:
   {prog} house/lastsucc --arti -o /tmp
 Wait for 'longwinded' project to complete build while showing console output:
   {prog} longwinded -w -c
