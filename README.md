@@ -34,11 +34,10 @@ start a build (`-b`) while showing console output (`-c`)
 This is the usage for `jenkins.py`:
 ```
 $ ./jenkins.py -h
-usage: jenkins.py [-p PARAMS] [-b] [-B] [-c] [-a] [-o DIR] [-i] [-w]
-                  [-t TIMEOUT] [--arti] [--groovy FILE] [--get-config FILE]
-                  [--post-config FILE] [--auth NAME_TOK] [--list] [--que]
-                  [--nodes] [--ws PATH] [--url URL] [--wipews] [--no-progress]
-                  [-d srhtj] [-v] [-h]
+usage: jenkins.py [-b] [-p PARAMS] [-B] [-c] [-w] [-t TIMEOUT] [--groovy FILE] [--get-groovy]
+                  [--get-config] [--post-config FILE] [--arti] [-o DIR] [-i] [-a] [--list] [--que]
+                  [--nodes] [--ws PATH] [--wipews] [-d srhtj] [--no-progress] [--url URL]
+                  [--auth NAME_TOK] [--makeconf] [-v] [-h]
                   [JOB[/ID]]
 
 Start Jenkins jobs remotely via Jenkins REST API, retrieve build artifacts,
@@ -46,41 +45,46 @@ and much more
 
 Configuration is read from $HOME/.jenkins.ini
 
-positional arguments:
-  JOB[/ID]            Jenkins job name (and build ID)
+Position arguments:
+  JOB[/ID]            Jenkins job name (and build ID). This is a mandatory argument for many
+                      commands
 
-optional arguments:
-  -p PARAMS           Job params given as comma separated list of key=value
-                      pairs, e.g. 'foo=1,baz=10'
+Build arguments:
   -b                  Start build job
+  -p PARAMS           Job params given as comma separated list of key=value pairs, e.g.
+                      'foo=1,baz=10'
   -B                  Stop build job. Give option twice to cancel job
   -c                  Get console ouput for job
-  -a                  Get all (e.g. get all build of project)
-  -o DIR              Output directory for build artifacts
-  -i                  Get info for project
-  -w                  Wait for job completion. Useful when job is already
-                      running
-  -t TIMEOUT          Build completion timeout (when -b option is given).
-                      Default is auto-computed
-  --arti              Get artifacts from build and save them
-  --groovy FILE       Get config.xml, replace groovy script with FILE and post
-                      new config
-  --get-config FILE   Get config.xml and save to FILE
+  -w                  Wait for job completion. Useful when job is already running
+  -t TIMEOUT          Build completion timeout (when -b option is given). Default is auto-computed
+
+Jenkins config and groovy commands/actions:
+  --groovy FILE       Get config.xml, replace groovy script with FILE and post new config
+  --get-groovy        Get config.xml, extract groovy script and print it
+  --get-config        Get config.xml and print it
   --post-config FILE  Read FILE and post as config.xml to Jenkins job JOBNAME
-  --auth NAME_TOK     Username and API token, separated by colon. Usually
-                      required for --get-config, --post-config
+
+Misc commands/actions:
+  --arti              Get artifacts from build and save them
+  -o DIR              Output directory for fetched files (e.g. from --arti or --ws command
+                      options)
+  -i                  Get project info summary
+  -a                  List all builds of project
   --list              List all projects
   --que               List Jenkins queue
   --nodes             List Jenkins build nodes/machines
-  --ws PATH           Get file PATH from workspace
-  --url URL           Jenkins server URL. Default is
-                      https://jenkins.url.not.set or JENKINS_URL from
-                      environment
+  --ws PATH           Get file PATH from workspace. Use 'some/sub/dir/zip' to get zip of directory
   --wipews            Wipe out (delete) workspace of JOB_NAME
+
+Misc options:
+  -d srhtj            Log HTTP transactions: s = send, r = response status, h = response headers,
+                      t = response text, j = response pretty json
   --no-progress       Suppress wait progress messages
-  -d srhtj            Log HTTP transactions: s = send, r = response status, h
-                      = response headers, t = response text, j = response
-                      pretty json
+  --url URL           Jenkins server URL. Default is https://jenkins.url.not.set or JENKINS_URL
+                      from environment
+  --auth NAME_TOK     Username and API token, separated by colon. Usually required for --get-
+                      config, --post-config
+  --makeconf          Write a configuration file template
   -v                  Be more verbose
   -h                  Show usage. Give option twice to see usage examples
 

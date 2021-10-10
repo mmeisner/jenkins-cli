@@ -1270,7 +1270,7 @@ def parser_create():
 Start Jenkins jobs remotely via Jenkins REST API, retrieve build artifacts,
 and much more
 
-Configuration is read from {Config.FILENAME}
+Configuration is read from ${{HOME}}/{os.path.basename(Config.FILENAME)}
 """
     epilog = f"""
 See command-line examples with: {prog} -hh
