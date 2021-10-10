@@ -1309,10 +1309,8 @@ See command-line examples with: {prog} -hh
     args_other = parser.add_argument_group("Misc commands/actions")
     args_other.add_argument('--arti', dest='get_artifacts', default=False, action="store_true",
         help="Get artifacts from build and save them")
-    # args_other.add_argument('-j', dest='job_id', metavar="ID", default="lastSuccessfulBuild",
-    #     help="Job ID, e.g. for fetching artifacts from specific build job. Default is 'lastSuccessfulBuild'")
     args_other.add_argument('-o', dest='outdir', metavar='DIR', default=".",
-        help="Output directory for build artifacts")
+        help="Output directory for fetched files (e.g. from --arti or --ws command options)")
     args_other.add_argument('-i', dest='get_info', default=False, action="store_true",
         help="Get project info summary")
     args_other.add_argument('-a', dest='all', default=False, action="store_true",
