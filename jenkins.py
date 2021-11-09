@@ -1285,10 +1285,11 @@ prog = os.path.basename(__file__)
 
 def parser_create():
     description = f"""\
-Start Jenkins jobs remotely via Jenkins REST API, retrieve build artifacts,
-and much more
+Start Jenkins jobs remotely via Jenkins REST API, show console log,
+replace pipeline script, list nodes or job queue, print job build info,
+retrieve build artifacts, and much much more
 
-Configuration is read from ${{HOME}}/{os.path.basename(Config.FILENAME)}
+Configuration is read from $HOME/{os.path.basename(Config.FILENAME)}
 """
     epilog = f"""
 See command-line examples with: {prog} -hh
@@ -1314,7 +1315,7 @@ See command-line examples with: {prog} -hh
     args_build.add_argument('-t', dest='timeout', type=int, default=None,
         help="Build completion timeout (when -b option is given). Default is auto-computed")
 
-    groovy_args = parser.add_argument_group("Jenkins config and groovy commands/actions")
+    groovy_args = parser.add_argument_group("Project/job config and groovy commands/actions")
     groovy_args.add_argument('--groovy',  dest='groovy', metavar='FILE', type=str,
         help="Get config.xml, replace groovy script with FILE and post new config")
     groovy_args.add_argument('--get-groovy',  dest='get_groovy', action="store_true",
@@ -1324,40 +1325,42 @@ See command-line examples with: {prog} -hh
     groovy_args.add_argument('--post-config',  dest='post_config', metavar='FILE', type=str,
         help="Read FILE and post as config.xml to Jenkins job JOBNAME")
 
-    args_other = parser.add_argument_group("Misc commands/actions")
-    args_other.add_argument('--arti', dest='get_artifacts', default=False, action="store_true",
-        help="Get artifacts from build and save them")
-    args_other.add_argument('-o', dest='outdir', metavar='DIR', default=".",
-        help="Output directory for fetched files (e.g. from --arti or --ws command options)")
-    args_other.add_argument('-i', dest='get_info', default=False, action="store_true",
-        help="Get project info summary")
-    args_other.add_argument('-a', dest='all', default=False, action="store_true",
+    group = parser.add_argument_group("Project/job commands/actions")
+    group.add_argument('-i', dest='get_info', default=False, action="store_true",
+        help="Get project summary info")
+    group.add_argument('-a', dest='all', default=False, action="store_true",
         help="List all builds of project")
-    args_other.add_argument('--list', dest='list', default=False, action="store_true",
-        help=f"List all projects")
-    args_other.add_argument('--que', dest='list_queue', default=False, action="store_true",
-        help=f"List Jenkins queue")
-    args_other.add_argument('--nodes', dest='list_nodes', default=False, action="store_true",
-        help=f"List Jenkins build nodes/machines")
-    args_other.add_argument('--ws', dest='ws_get', metavar="PATH", default="", type=str,
+    group.add_argument('--arti', dest='get_artifacts', default=False, action="store_true",
+        help="Get artifacts from build and save them")
+    group.add_argument('--ws', dest='ws_get', metavar="PATH", default="", type=str,
         help=f"Get file PATH from workspace. Use 'some/sub/dir/zip' to get zip of directory")
-    args_other.add_argument('--wipews', dest='wipe_workspace', default=False, action="store_true",
+    group.add_argument('-o', dest='outdir', metavar='DIR', default=".",
+        help="Output directory for fetched files (e.g. from --arti or --ws command options)")
+    group.add_argument('--wipews', dest='wipe_workspace', default=False, action="store_true",
         help=f"Wipe out (delete) workspace of JOB_NAME")
 
-    option_args = parser.add_argument_group("Misc options")
-    option_args.add_argument('-d', dest='log_http', metavar='srhtj', default="",
+    group = parser.add_argument_group("Jenkins list actions")
+    group.add_argument('--list', dest='list', default=False, action="store_true",
+        help=f"List all projects")
+    group.add_argument('--que', dest='list_queue', default=False, action="store_true",
+        help=f"List Jenkins queue")
+    group.add_argument('--nodes', dest='list_nodes', default=False, action="store_true",
+        help=f"List Jenkins build nodes/machines")
+
+    group = parser.add_argument_group("Misc options")
+    group.add_argument('-d', dest='log_http', metavar='srhtj', default="",
         help='Log HTTP transactions: ' + Jenkins.get_log_help())
-    option_args.add_argument('--no-progress', dest='log_progress', default=True, action="store_false",
+    group.add_argument('--no-progress', dest='log_progress', default=True, action="store_false",
         help="Suppress wait progress messages")
-    option_args.add_argument('--url', dest='server_url', metavar="URL", default=None,
+    group.add_argument('--url', dest='server_url', metavar="URL", default=None,
         help=f"Jenkins server URL. Default is {Config().server_url} or JENKINS_URL from environment")
-    option_args.add_argument('--auth', dest='auth', metavar="NAME_TOK", default=None,
+    group.add_argument('--auth', dest='auth', metavar="NAME_TOK", default=None,
         help=f"Username and API token, separated by colon. Usually required for --get-config, --post-config")
-    option_args.add_argument('--makeconf', dest='write_config', action='store_true',
+    group.add_argument('--makeconf', dest='write_config', action='store_true',
         help='Write a configuration file template')
-    option_args.add_argument('-v', dest='verbose', action='count', default=0,
+    group.add_argument('-v', dest='verbose', action='count', default=0,
         help='Be more verbose')
-    option_args.add_argument('-h', dest='help', action='count', default=0,
+    group.add_argument('-h', dest='help', action='count', default=0,
         help='Show usage. Give option twice to see usage examples')
     return parser
 
