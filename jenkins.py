@@ -395,10 +395,13 @@ class Jenkins(object):
         see https://stackoverflow.com/questions/16907684/fetching-a-url-from-a-basic-auth-protected-jenkins-server-with-urllib2
         and https://findwork.dev/blog/advanced-usage-python-requests-timeouts-retries-hooks/
 
-        :param url: URL of the form "http://jenkins.lan/job/{name}"
+        :param url:    URL of the form "http://jenkins.lan/job/{name}"
+        :param method: GET or POST
+        :param params: Dictionary of request params
+        :param auth:   True to use authenticated request
         :return:    requests.Response object from requests.get()
         """
-        if auth is True:
+        if auth:
             auth = HTTPBasicAuth(username=self.auth_user, password=self.auth_password)
 
         if self.log_req:
@@ -423,16 +426,21 @@ class Jenkins(object):
 
         return response
 
-    def request_api_json(self, url, params=None, **kwargs):
+    def request_api_json(self, url, params=None, try_auth=False, **kwargs):
         """
         Send request and return response as JSON
 
-        :param url: URL of the form "http://some.server.loc/job/{name}/api/json"
-        :return:    JSON response object
+        :param url:      URL of the form "http://some.server.loc/job/{name}/api/json"
+        :param params:   Dictionary of request params
+        :param try_auth: Use authenticated request if possible
+        :return:         JSON response object
         """
         if not url.endswith("/api/json"):
             url += "/api/json"
-        response = self.request(url, params=params, **kwargs)
+
+        # Use authenticated request if we have username and password available
+        with_auth = try_auth and self.auth_user and self.auth_password
+        response = self.request(url, params=params, auth=with_auth, **kwargs)
 
         if self.log_resp_text:
             print(response.text)
