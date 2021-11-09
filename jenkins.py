@@ -575,16 +575,19 @@ or the certificate has expired.
             numExecutors = j.get('numExecutors')
             idle_busy = "idle" if j.get('idle') is True else "busy"
             on_offline = "offline" if j.get('offline') is True else "online"
+            temp_space = j['monitorData'].get('hudson.node_monitors.TemporarySpaceMonitor', {})
+            if temp_space:
+                size = temp_space['size']
+                disk_free = "disk_free={:.1f}GB".format((size >> 20) / 1024)
+            else:
+                disk_free = ""
 
             if oneline:
-                print(f"{i:3d} {_class} {idle_busy} {numExecutors} {on_offline} '{displayName}' labels='{labels}' desc='{desc}'")
+                print(f"{i:3d} {_class} {idle_busy} {numExecutors} {on_offline} '{displayName}' labels='{labels}' desc='{desc}' {disk_free}")
             else:
                 print(f"{i:3d} {_class:{w}} '{displayName}' {desc}")
                 for k in ('labels', 'idle', 'numExecutors'):
                     print(f"    {k:{w}} {j.get(k)}")
-
-        # if oneline:
-        #     print("num Class  Idle  Executors online name labels desc")
 
         for i, item in enumerate(self.get_nodes(search=self.job_name)):
             print_computer(i, item)
@@ -598,8 +601,9 @@ or the certificate has expired.
             j['labels'] = " ".join(x['name'] for x in j['assignedLabels'])
             return j
 
+        # authenticated request adds "monitorData" dictionary to response
         url = f"{self.server_url}/computer"
-        jr = jen.request_api_json(url)
+        jr = jen.request_api_json(url, try_auth=True)
         for item in jr.get('computer'):
             c = fixup_computer(item)
             if not search:
