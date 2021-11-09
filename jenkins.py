@@ -311,9 +311,9 @@ class Jenkins(object):
         if self.log_progress:
             print(f"{color.progress}{s}{fg.reset}")
 
-    def echo_note(self, s, level=0):
+    def echo_note(self, s, level=0, file=None):
         if self.verbose >= level:
-            print(f"{color.note}{s}{fg.reset}")
+            print(f"{color.note}{s}{fg.reset}", file=file)
 
     def echo_info(self, s, level=0):
         if self.verbose >= level:
@@ -755,12 +755,18 @@ or the certificate has expired.
         job_url = self.get_job_url(name=name)
         url = f"{job_url}/config.xml"
         response = self.request(url, auth=True)
-        if not response.text.startswith('<?xml version=') \
-            or not '<flow-definition plugin="workflow-job@' in response.text:
-            self.echo_note("""Content of response is not exactly as expected ...
-Please check the output to see if it really is config.xml""")
 
-        return response.text, minidom.parseString(response.text)
+        dom = minidom.parseString(response.text)
+
+        # warn on unexpected content
+        first_tag = dom.documentElement.tagName
+        if not response.text.startswith('<?xml version='):
+            self.echo_note("Content of response is not XML as expected", file=sys.stderr)
+        root_tags = ("flow-definition", "project")
+        if first_tag not in root_tags:
+            self.echo_note(f"Root element is '{first_tag}' but expected one of: {root_tags}", file=sys.stderr)
+
+        return response.text, dom
 
     def get_system_log(self):
         url = f"{self.server_url}/api/system/logs"
