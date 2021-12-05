@@ -172,6 +172,9 @@ class Config(object):
         self.check_certificate = True
         self.auth_user = ""
         self.auth_password = ""
+        # Set this to False to completely disable Jenkins linter before
+        # new groovy script is uploaded (using --groovy option)
+        self.jenkins_crumb = ""
         self.build_params_default = "delay=0"
         self.console_poll_interval = 2
         self.console_log_dir = "/tmp/jenkins-log"
@@ -273,6 +276,7 @@ class Jenkins(object):
         self.check_certificate = True
         self.auth_user = ""
         self.auth_password = ""
+        self.jenkins_crumb = ""
         self.console_poll_interval = 2
         self.console_log_dir = "/tmp/jenkins-log"
         self.stop_job_on_user_abort = False
@@ -832,12 +836,47 @@ You can inspect the Jenkins server logs for the exact cause here:
 """)
             raise
 
+    def pipeline_linter_is_valid(self, script_text):
+        """
+        See https://www.jenkins.io/doc/book/pipeline/development
+
+        :return: True on success
+        """
+        # if user does not want linting then return success
+        if self.jenkins_crumb is False:
+            return True
+
+        if not self.jenkins_crumb:
+            self.echo_note(f"Configuration does not contain 'jenkins_crumb'\n"
+                           f"I will request one and print it. You should add it to the config file like:\n"
+                           f"jenkins_crumb=\"INSERT-CRUMB-HERE\"")
+            #url = self.server_url + '/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)'
+            url = self.server_url + '/crumbIssuer/api/xml?xpath=//crumb'
+            response = self.request(url, "GET")
+            crumb = response.content.decode("utf8").replace("<crumb>", "").replace("</crumb>", "")
+            print(f'jenkins_crumb=\"{crumb}\"')
+        else:
+            crumb = self.jenkins_crumb
+
+        url = self.server_url + "/pipeline-model-converter/validate"
+        headers = { 'Jenkins-Crumb': crumb }
+        form_data = { 'jenkinsfile': script_text }
+        response = self.request(url, method="POST", headers=headers, data=form_data)
+        text = response.content.decode("utf8").rstrip()
+        print(text)
+        return not text.startswith("Errors") # ... " encountered validating Jenkinsfile:"
+
     def get_groovy_script(self):
         xml, dom = self.get_config_as_xml_and_dom()
         node = xml_get_first_child_node_of_tag(dom, "script")
         return node.nodeValue if node else ""
 
     def get_config_replace_script_and_post(self, filename):
+        script_text = open(filename, "r").read()
+
+        if not self.pipeline_linter_is_valid(script_text):
+            raise JenkinsException("Not posting groovy file due to Jenkins linter errors")
+
         xml, dom = self.get_config_as_xml_and_dom()
 
         ts = datetime.datetime.fromtimestamp(time.time())
@@ -850,7 +889,6 @@ You can inspect the Jenkins server logs for the exact cause here:
         if not node:
             raise ValueError("<script> element not found in config")
 
-        script_text = open(filename, "r").read()
         node.nodeValue = script_text
         self.echo_info(f"Replaced config.xml <script> with file '{filename}'")
 
