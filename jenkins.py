@@ -63,10 +63,10 @@ def xml_get_first_child_node_of_tag(dom, tag):
     :return:
     """
     node = dom.getElementsByTagName(tag)
-    if node:
-        node = node[0].firstChild
-        if node.nodeType == minidom.Node.TEXT_NODE:
-            return node
+    if node and node[0].childNodes and node[0].childNodes.length > 0:
+        child = node[0].firstChild
+        if child.nodeType == minidom.Node.TEXT_NODE:
+            return child
     else:
         return None
 
@@ -146,6 +146,11 @@ def timestamp_ms_to_datetime_and_deltatime(ts_ms):
 #####################################################################
 # Jenkins
 #####################################################################
+
+# Jenkins has some advanced REST methods where one can select specific JSON fields, like:
+# http://jenkins.lan/job/JOBNAME/api/json?tree=builds[number,result,duration,url,actions[parameters[name,value]]]
+# In this code, we just retrieve everything and filter stuff ourselves
+
 
 class JenkinsException(Exception):
     pass
