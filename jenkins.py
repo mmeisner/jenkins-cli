@@ -31,7 +31,7 @@ Style.__new__.__defaults__ = ("",) * len(Style._fields)
 fg = Color()
 style = Style()
 
-ColorLog = collections.namedtuple('ColorLog', "send recv info note progress error warn")
+ColorLog = collections.namedtuple('ColorLog', "send recv info note progress error warn miniwarn")
 ColorLog.__new__.__defaults__ = ("",) * len(ColorLog._fields)
 color = ColorLog()
 
@@ -50,6 +50,7 @@ def color_enable(force=False):
             progress = fg.white + style.dim,
             error=fg.ired,
             warn=fg.iyellow,
+            miniwarn=fg.iyellow,
         )
 
 def xml_get_first_child_node_of_tag(dom, tag):
@@ -322,6 +323,10 @@ class Jenkins(object):
     def echo_verb(self, s, level=1):
         if self.verbose >= level:
             print(f"{color.info}{s}{fg.reset}")
+
+    def echo_color(self, s, color=Color.white, level=0, file=sys.stdout):
+        if self.verbose >= level:
+            print(f"{color}{s}{fg.reset}", file=file)
 
     def log_response(self, response, force=False):
         # if self.log_req or force:
@@ -686,7 +691,8 @@ or the certificate has expired.
                     defval = param.get('defaultParameterValue', {}).get('value')
                     print(f"    {name:{name_width}} {defval}")
             else:
-                print(f"  {_class}: No handler for printing this class")
+                self.echo_color(f"  No handler for printing class {_class}",
+                                color=color.miniwarn, file=sys.stderr)
 
         for prop in props:
             if len(prop) > 1:
