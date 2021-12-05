@@ -1176,54 +1176,31 @@ or as build_params_default in config file.
             self.running = False
             #self.join()
 
-    def workspace_get_file(self, filepath):
-        # There seems to be a difference in the URL used to retrieve items
-        # from the workspace. Maybe it has something to do if the job is
-        # configured with or without concurrent builds.
-        # The two base URLs are:
-        #   "{jobid_url}/execution/node/{str(i)}/ws/{filepath}" (concurrent job)
-        #   "ws/{filepath}" (non-concurrent job)
-        # That has to be investigated further. For now we assume the simple case
-        # that there is only one workspace per job
-        # TODO: maybe we should automatically retry a directory fetch so the user
-        #       doesn't have to be made aware of the difference in the actual API.
-        #       and maybe we should also automatically unzip the zip file?
-        def post_normal():
-            resp = self.request(url, method="POST", auth=True)
-            # This is a quick adhoc fix for determining whether we get an HTML
-            # page listing files or if we got the actual file
-            if 'X-Instance-Identity' in resp.headers:
-                self.echo_info(f"{filepath} seems to be a directory: fetch a directory with: --ws {filepath}/zip")
-                return None
+    def workspace_get_file_or_zipped_dir(self, filepath):
+        """
+        Fetch `filepath` from job workspace. `filepath` can refer to either a
+        file or a directory and this will be automatically detected.
+        If it is a directory, the returned filepath will end in ".zip".
+        Otherwise, if it is a file, returned `filepath` is unmodified
 
-            return resp.content
-
-        def post_chunked():
-            """This takes double time compared to post_normal()"""
-            resp = self.request(url, method="POST", auth=True, stream=True)
-            # This is a quick adhoc fix for determining whether we get an HTML
-            # page listing files or if we got the actual file
-            if 'X-Instance-Identity' in resp.headers:
-                self.echo_info(f"{filepath} seems to be a directory")
-                return None
-
-            length = resp.headers.get('Content-Length')
-            # print(f"content-length = {length}")
-            content = b""
-            for i, chunk in enumerate(resp.iter_content(chunk_size=10 * 1024 * 1024)):
-                #print(i)
-                content += chunk
-
-            resp.close()
-            return content
-
-        def request_transfer_and_wait():
+        :param filepath: Path to file or directory in Jenkins workspace
+        :return:         content, filepath (possibly with ".zip" suffix if item was a directory)
+        """
+        def request_transfer_and_wait(url):
             try:
                 waiter = Jenkins.Waiter(self, "Transferring")
                 waiter.start()
-                content = post_normal()
-                waiter.stop()
-                return content
+                item_path = os.path.basename(url)
+                resp = self.request(url, method="POST", auth=True)
+                # This is a quick adhoc fix for determining whether we get an HTML
+                # page listing files or if we got the actual file
+                if 'X-Instance-Identity' in resp.headers:
+                    self.echo_info(f"{filepath} seems to be a directory: fetching with modified URL...")
+                    item_path += ".zip"
+                    url = f"{url}/*zip*/{item_path}"
+                    resp = self.request(url, method="POST", auth=True)
+
+                return resp.content, item_path
 
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code != 404:
@@ -1231,36 +1208,58 @@ or as build_params_default in config file.
             finally:
                 waiter.stop()
 
-        # assume non-concurrent job
+            return None, None
+
+        # The URL contains a node index which is the slave index, the first slave
+        # being index 0 (actually the master node... but is it always that?)
+        #
+        # URL to get entire workspace:
+        #     http://jenkins.lan/job/MYJOB/43/execution/node/2/ws/*zip*/MYJOB.zip
+        # URL to get 'qwe' dir:
+        #     http://jenkins.lan/job/MYJOB/43/execution/node/3/ws/qwe/*zip*/qwe.zip
+        # URL to get 'qwe/README' file:
+        #     http://jenkins.lan/job/MYJOB/43/execution/node/3/ws/qwe/README
+
+        # There seems to be a difference in the URL used to retrieve items
+        # from the workspace. Maybe it has something to do if the job is
+        # configured with or without concurrent builds.
+        # The two base URLs are:
+        #   "{jobid_url}/execution/node/{str(i)}/ws/{filepath}" (concurrent job)
+        #   "ws/{filepath}" (non-concurrent job)
+        # This has to be investigated further.
+
         simple_job = True
         if simple_job:
+            # try simple workspace fetch URL
             self.echo_info("Getting workspace file ...")
             url_base = self.get_job_url()
             url = f"{url_base}/ws/{filepath}"
-            return request_transfer_and_wait()
-        else:
-            self.echo_info("Getting workspace file (trying various URLs...)")
-            url_base = self.get_job_id_url(job_id="lastBuild")
-            for i in range(10):
-                url = f"{url_base}/execution/node/{str(i)}/ws/{filepath}"
-                return request_transfer_and_wait()
-            raise ValueError("Exhausted .../execution/node/<ID>/ws/... URL attempts")
+            content, itempath = request_transfer_and_wait(url)
+            if content:
+                return content, itempath
+
+        # TODO: Use async
+        self.echo_info("Getting workspace file (trying all nodes...)")
+        url_base = self.get_job_id_url(job_id="lastBuild")
+        for i, node in enumerate(self.get_nodes()):
+            url = f"{url_base}/execution/node/{str(i)}/ws/{filepath}"
+            content, itempath = request_transfer_and_wait(url)
+            if content:
+                return content, itempath
+
+        raise ValueError("Exhausted .../execution/node/<ID>/ws/... URL attempts")
 
 
     def workspace_save_file(self, path, dest_dir="."):
         """
 
-        :param path:     path to workspace file/dir to fetch and save
-        :param dest_dir:
+        :param path:     Path to workspace file/dir to fetch
+        :param dest_dir: Create this dir and write files here
         :return:
         """
-        if path == "/zip":
+        if path in ("/", "/zip"):
             # get entire workspace as a zip
             path = f"*zip*/{self.job_name}.zip"
-        elif path.endswith("/zip"):
-            path = path[:-4]
-            path_base = os.path.basename(path)
-            path = f"{path}/*zip*/{path_base}.zip"
 
         if not os.path.exists(dest_dir):
             print(f"created {dest_dir}")
@@ -1271,8 +1270,12 @@ or as build_params_default in config file.
         if os.path.exists(dest_path):
             raise ValueError(f"{dest_path} already exists") # FileExistsError
 
+        dest_zip_path = f"{dest_path}.zip"
+        if os.path.exists(dest_zip_path):
+            raise ValueError(f"{dest_zip_path} already exists") # FileExistsError
+
         started = time.time()
-        content = self.workspace_get_file(path)
+        content, item_path = self.workspace_get_file_or_zipped_dir(path)
         if not content:
             return
 
@@ -1284,11 +1287,9 @@ or as build_params_default in config file.
             elapsed_human = deltatimeToHumanStr(elapsed)
             self.echo_info(f"Transferred {size_str} in {elapsed_human}")
 
-        open(dest_path, "wb").write(content)
+        open(item_path, "wb").write(content)
         size_kb = len(content) / 1024
-        self.echo_info(f"Wrote {size_kb:.1f}kB to {dest_path}")
-        # resp = self.request(url, method="GET", auth=False, data="")
-        sys.exit(0)
+        self.echo_info(f"Wrote {size_kb:.1f}kB to {item_path}")
 
 
 prog = os.path.basename(__file__)
@@ -1343,7 +1344,7 @@ See command-line examples with: {prog} -hh
     group.add_argument('--arti', dest='get_artifacts', default=False, action="store_true",
         help="Get artifacts from build and save them")
     group.add_argument('--ws', dest='ws_get', metavar="PATH", default="", type=str,
-        help=f"Get file PATH from workspace. Use 'some/sub/dir/zip' to get zip of directory")
+        help=f"Download workspace file or dir at PATH. Use '/' to download entire workspace")
     group.add_argument('-o', dest='outdir', metavar='DIR', default=".",
         help="Output directory for fetched files (e.g. from --arti or --ws command options)")
     group.add_argument('--wipews', dest='wipe_workspace', default=False, action="store_true",
@@ -1398,10 +1399,10 @@ Replace groovy script for 'foobaz' project, then build while showing console out
   {prog} foobaz --groovy newscript -bc
 Get config.xml for 'foobaz' project:
   {prog} foobaz --get-config=foobaz.config.xml
-Get file from workspace of last build of 'foobaz' project:
+Get file from workspace (of last build) of 'foobaz' project:
   {prog} foobaz --ws build/output.log
-Get zipped directory of workspace of last build of 'foobaz' project:
-  {prog} foobaz --ws build/zip
+Get directory of workspace (of last build) of 'foobaz' project and save in 'outdir':
+  {prog} foobaz --ws somedir -o outdir
 Get console logs for build jobs 42 through 50:
   {prog} foobaz/42..50 -c
 
@@ -1515,7 +1516,7 @@ if __name__ == "__main__":
         elif opt.get_console:
             jen.get_console_output()
 
-        elif opt.ws_get:
+        if opt.ws_get:
             jen.workspace_save_file(opt.ws_get, dest_dir=opt.outdir)
 
         if opt.get_artifacts:
