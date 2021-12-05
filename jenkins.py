@@ -400,16 +400,18 @@ class Jenkins(object):
         if not self.auth_password:
             raise ValueError(f"Jenkins password/API-token is not set: {s}")
 
-    def request(self, url, method="GET", params=None, auth=None, **kwargs):
+    def request(self, url, method="GET", params=None, headers=None, data=None, auth=None, **kwargs):
         """
         see https://stackoverflow.com/questions/16907684/fetching-a-url-from-a-basic-auth-protected-jenkins-server-with-urllib2
         and https://findwork.dev/blog/advanced-usage-python-requests-timeouts-retries-hooks/
 
-        :param url:    URL of the form "http://jenkins.lan/job/{name}"
-        :param method: GET or POST
-        :param params: Dictionary of request params
-        :param auth:   True to use authenticated request
-        :return:    requests.Response object from requests.get()
+        :param url:     URL of the form "http://jenkins.lan/job/{name}"
+        :param method:  GET or POST
+        :param headers: Dictionary of user headers
+        :param params:  Dictionary of request params
+        :param data:    Dictionary of form data
+        :param auth:    True to use authenticated request
+        :return:        requests.Response object from requests.get()
         """
         if auth:
             auth = HTTPBasicAuth(username=self.auth_user, password=self.auth_password)
@@ -419,13 +421,13 @@ class Jenkins(object):
             auth_str = f"with HTTPBasicAuth(username={self.auth_user})" if auth else ""
             print(f"{color.send}{method} {url}{q}{fg.reset} {auth_str}")
 
-        response = requests.request(method, url, params=params, verify=self.check_certificate, auth=auth, **kwargs)
+        response = requests.request(method, url, headers=headers, params=params, data=data, verify=self.check_certificate, auth=auth, **kwargs)
 
         if not auth and response.status_code == 403 and self.auth_user and self.auth_password:
             self.log_response(response)
             self.echo_progress("Retrying with HTTPBasicAuth")
             auth = HTTPBasicAuth(username=self.auth_user, password=self.auth_password)
-            response = requests.request(method, url, params=params, verify=self.check_certificate, auth=auth, **kwargs)
+            response = requests.request(method, url, headers=headers, params=params, data=data, verify=self.check_certificate, auth=auth, **kwargs)
 
         self.log_response(response)
 
