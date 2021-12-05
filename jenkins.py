@@ -638,10 +638,9 @@ or the certificate has expired.
 
         return job_params
 
-    def print_project(self, name=None, all_builds=False):
+    def print_project(self, name=None, show_only_all_builds=False):
         """
-
-        :param name:
+        Print info on a single project
         """
         url = self.get_job_url(name)
         jr = self.request_api_json(url)
@@ -661,7 +660,7 @@ or the certificate has expired.
                 name = b.replace("Build", "")
                 name_to_number[name] = number
 
-        if all_builds:
+        if show_only_all_builds:
             jr = self.build_get(job_id="all")
             for jr_build in reversed(jr.get('builds')):
                 self.build_print(jr_build, oneline=True, name_to_number=name_to_number)
@@ -1332,9 +1331,9 @@ See command-line examples with: {prog} -hh
         help="Read FILE and post as config.xml to Jenkins job JOBNAME")
 
     group = parser.add_argument_group("Project/job commands/actions")
-    group.add_argument('-i', dest='get_info', default=False, action="store_true",
-        help="Get project summary info")
-    group.add_argument('-a', dest='all', default=False, action="store_true",
+    group.add_argument('-i', dest='show_info', default=False, action="store_true",
+        help="Show project summary info")
+    group.add_argument('-a', dest='show_all_builds', default=False, action="store_true",
         help="List all builds of project")
     group.add_argument('--arti', dest='get_artifacts', default=False, action="store_true",
         help="Get artifacts from build and save them")
@@ -1463,9 +1462,6 @@ if __name__ == "__main__":
         if not jen.job_id:
             jen.job_id = "lastBuild"
 
-        if opt.list:
-            jen.list_projects()
-
         if getattr(opt, 'wipe_workspace', None):
             # not working, Response: 404 Not Found (method was POST)
             jen.workspace_wipeout()
@@ -1522,10 +1518,13 @@ if __name__ == "__main__":
             artifacts = jr.get('artifacts', [])
             jen.fetch_artifacts(opt.outdir, artifacts)
 
-        if opt.get_info:
-            jen.print_project(all_builds=opt.all)
-        elif opt.all:
-            jen.print_project(all_builds=opt.all)
+        if opt.show_info:
+            jen.print_project()
+        if opt.show_all_builds:
+            jen.print_project(show_only_all_builds=opt.show_all_builds)
+
+        if opt.list:
+            jen.list_projects()
 
         if opt.list_queue:
             jen.list_queue()
