@@ -14,13 +14,17 @@ _jenkins()
 
     COMPREPLY=()
 
-    if [[ ${cur} == -* ]] ; then
+    if [[ ${cur} == -* ]]; then
         # if only one dash, expand all options
         COMPREPLY=( $(compgen -W "${opts_short} ${opts_long}" -- ${cur}) )
         return 0
-    elif [[ ${cur} == --* ]] ; then
+    elif [[ ${cur} == --* ]]; then
         # if two dashes, expand only long options
         COMPREPLY=( $(compgen -W "${opts_long}" -- ${cur}) )
+        return 0
+    elif [[ ${prev} == -o ]] ||[[ ${prev} == --groovy ]] ||  [[ ${prev} == --post-config ]]; then
+        # if previous option expects file arg
+        _filedir
         return 0
     else
         # else expand jobs
